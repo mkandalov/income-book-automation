@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.env
+.env.*
+!.env.example
+
+private_data/
+data/
+results/
+outputs/
+
+# Accounting source files and generated workbooks must never be committed.
+*.csv
+*.pdf
+*.xls
+*.xlsx
+
+.DS_Store
+*.log

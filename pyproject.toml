@@ -1,0 +1,33 @@
+[project]
+name = "income-book-automation"
+version = "0.1.0"
+description = "Automate Checkbox revenue parsing and Ukrainian income-book preparation"
+readme = "README.md"
+authors = [
+    { name = "Mikhail", email = "misha09ka@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openpyxl>=3.1.5",
+    "pdfplumber>=0.11.10",
+    "pydantic>=2.13.4",
+    "pyyaml>=6.0.3",
+    "rich>=15.0.0",
+    "typer>=0.27.0",
+]
+
+[project.scripts]
+income-book = "income_book_automation.cli:app"
+
+[project.urls]
+Repository = "https://github.com/mkandalov/income-book-automation"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.0",
+]

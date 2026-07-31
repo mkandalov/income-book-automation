@@ -1,0 +1,1 @@
+"""Income-book automation package."""
