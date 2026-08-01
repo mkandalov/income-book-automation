@@ -2,14 +2,34 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook
 
 from income_book_automation.parsers.checkbox import (
+    InvalidCheckboxRowError,
+    MissingCheckboxColumnError,
     parse_checkbox_file,
     parse_checkbox_row,
 )
 
 COLUMN_COUNT = 29
+COLUMN_INDEXES = {
+    "opened_at": 1,
+    "card_revenue": 25,
+    "card_refund": 26,
+    "cash_revenue": 27,
+    "cash_refund": 28,
+}
+
+
+def _make_checkbox_headers() -> list[object]:
+    headers: list[object] = [None] * COLUMN_COUNT
+    headers[1] = "Дата відкриття"
+    headers[25] = "Виручка безготівка"
+    headers[26] = "Повернення безготівка"
+    headers[27] = "Виручка готівка"
+    headers[28] = "Повернення готівка"
+    return headers
 
 
 def _excel_datetime(
@@ -49,7 +69,12 @@ def test_parse_checkbox_row_maps_values_and_calculates_net() -> None:
         cash_refund=100,
     )
 
-    record = parse_checkbox_row(row)
+    record = parse_checkbox_row(
+        row,
+        COLUMN_INDEXES,
+        Path("test-checkbox.xlsx"),
+        2,
+    )
 
     assert record.date == date(2026, 6, 18)
     assert record.card_net == Decimal(36487)
@@ -66,7 +91,12 @@ def test_parse_checkbox_row_converts_empty_amounts_to_zero() -> None:
         cash_refund=None,
     )
 
-    record = parse_checkbox_row(row)
+    record = parse_checkbox_row(
+        row,
+        COLUMN_INDEXES,
+        Path("test-checkbox.xlsx"),
+        2,
+    )
 
     assert record.card_revenue == Decimal(0)
     assert record.card_refund == Decimal(0)
@@ -80,7 +110,7 @@ def test_parse_checkbox_file_reads_rows_and_skips_empty_date(
 ) -> None:
     workbook = Workbook()
     worksheet = workbook.active
-    worksheet.append([f"column_{index}" for index in range(COLUMN_COUNT)])
+    worksheet.append(_make_checkbox_headers())
     worksheet.append(
         list(
             _make_checkbox_row(
@@ -116,3 +146,79 @@ def test_parse_checkbox_file_reads_rows_and_skips_empty_date(
     assert records[0].total_net == Decimal(1050)
     assert records[1].date == date(2026, 6, 2)
     assert records[1].total_net == Decimal(2300)
+
+
+def test_parse_checkbox_file_finds_reordered_columns(tmp_path: Path) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(
+        [
+            "Виручка готівка",
+            "Повернення безготівка",
+            "Дата відкриття",
+            "Повернення готівка",
+            "Виручка безготівка",
+        ]
+    )
+    worksheet.append(
+        [
+            500,
+            100,
+            _excel_datetime(2026, 6, 18, 8, 49),
+            50,
+            1000,
+        ]
+    )
+
+    source_path = tmp_path / "reordered-checkbox.xlsx"
+    workbook.save(source_path)
+    workbook.close()
+
+    records = parse_checkbox_file(source_path)
+
+    assert len(records) == 1
+    assert records[0].date == date(2026, 6, 18)
+    assert records[0].card_net == Decimal(900)
+    assert records[0].cash_net == Decimal(450)
+    assert records[0].total_net == Decimal(1350)
+
+
+def test_parse_checkbox_file_rejects_missing_required_header(
+    tmp_path: Path,
+) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    headers = _make_checkbox_headers()
+    headers[28] = None
+    worksheet.append(headers)
+
+    source_path = tmp_path / "missing-header-checkbox.xlsx"
+    workbook.save(source_path)
+    workbook.close()
+
+    with pytest.raises(MissingCheckboxColumnError, match="Повернення готівка"):
+        parse_checkbox_file(source_path)
+
+
+def test_parse_checkbox_file_rejects_negative_amount(tmp_path: Path) -> None:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.append(_make_checkbox_headers())
+    worksheet.append(
+        list(
+            _make_checkbox_row(
+                _excel_datetime(2026, 6, 18, 8, 49),
+                card_revenue=-1,
+                card_refund=0,
+                cash_revenue=0,
+                cash_refund=0,
+            )
+        )
+    )
+
+    source_path = tmp_path / "negative-amount-checkbox.xlsx"
+    workbook.save(source_path)
+    workbook.close()
+
+    with pytest.raises(InvalidCheckboxRowError, match="invalid monetary values"):
+        parse_checkbox_file(source_path)

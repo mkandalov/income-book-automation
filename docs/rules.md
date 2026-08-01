@@ -54,6 +54,8 @@ The bank parser will include credit transactions only. It will exclude:
 
 - transfers where the counterparty matches the same sole proprietor;
 - transactions whose payment purpose indicates a refund;
+- transactions whose payment purpose indicates returnable financial assistance
+  (`поворотно-фінансова допомога`);
 - debit transactions.
 
 These rules will be implemented and tested when the bank-statement parser is

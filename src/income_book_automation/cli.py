@@ -7,7 +7,10 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from income_book_automation.parsers.checkbox import parse_checkbox_file
+from income_book_automation.parsers.checkbox import (
+    CheckboxParseError,
+    parse_checkbox_file,
+)
 from income_book_automation.rules.income_rules import aggregate_checkbox_by_date
 
 app = typer.Typer(
@@ -36,14 +39,15 @@ def checkbox_summary(
     ],
 ) -> None:
     """Parse a Checkbox workbook and print daily revenue totals."""
-    records = parse_checkbox_file(path)
+    try:
+        records = parse_checkbox_file(path)
+    except CheckboxParseError as error:
+        print(f"Error: {error}")
+        raise SystemExit(1) from error
 
     daily_records = aggregate_checkbox_by_date(records)
 
-    card_total = sum(
-        (record.card_net for record in daily_records),
-        Decimal(0),
-    )
+    card_total = sum((record.card_net for record in daily_records), Decimal(0))
 
     cash_total = sum((record.cash_net for record in daily_records), Decimal(0))
 
