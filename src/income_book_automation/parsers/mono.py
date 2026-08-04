@@ -1,18 +1,33 @@
 import csv
-from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from income_book_automation.models import BankName, BankTransaction
+from income_book_automation.parsers.common import (
+    open_bank_csv,
+    parse_decimal_value,
+    parse_dotted_date,
+    validate_required_headers,
+)
+from income_book_automation.parsers.errors import InvalidBankRowError
+
+MONO_REQUIRED_HEADERS = {
+    "Дата операції",
+    "Вид операції (дебет/кредит)",
+    "Сума в валюті рахунку",
+    "Валюта операції",
+    "Номер платіжного доручення",
+    "Контрагент",
+    "IBAN контрагента",
+    "ЄДРПОУ контрагента",
+    "Деталі операції",
+}
 
 
 def normalize_header(value: str) -> str:
     return " ".join(value.split())
-
-
-def parse_mono_date(value: str) -> date:
-    day, month, year = map(int, value.strip().split("."))
-    return date(year, month, day)
 
 
 def parse_mono_row(
@@ -23,7 +38,14 @@ def parse_mono_row(
     account_number: str,
 ) -> BankTransaction:
 
-    amount = abs(Decimal(row["Сума в валюті рахунку"].strip().replace(",", ".")))
+    amount = abs(
+        parse_decimal_value(
+            row["Сума в валюті рахунку"],
+            path,
+            row_number,
+            "Сума в валюті рахунку",
+        )
+    )
 
     direction = row["Вид операції (дебет/кредит)"].strip()
 
@@ -34,9 +56,19 @@ def parse_mono_row(
         debit = amount
         credit = Decimal(0)
     else:
-        raise ValueError(f"Unknown Mono transaction direction: {direction!r}")
+        raise InvalidBankRowError(
+            f"File '{path.name}', row {row_number}, "
+            "column 'Вид операції (дебет/кредит)': "
+            "unsupported transaction direction"
+        )
 
-    transaction_date = parse_mono_date(row["Дата операції"])
+    transaction_date = parse_dotted_date(
+        row["Дата операції"],
+        path,
+        row_number,
+        "Дата операції",
+        order="DMY",
+    )
 
     currency = row["Валюта операції"].strip()
 
@@ -48,19 +80,24 @@ def parse_mono_row(
 
     counterparty_tax_id = row["ЄДРПОУ контрагента"].strip() or None
 
-    return BankTransaction(
-        date=transaction_date,
-        bank=BankName.MONO,
-        account_number=account_number,
-        currency=currency,
-        document_number=document_number,
-        debit=debit,
-        credit=credit,
-        counterparty=counterparty,
-        counterparty_account=counterparty_account,
-        payment_purpose=payment_purpose,
-        counterparty_tax_id=counterparty_tax_id,
-    )
+    try:
+        return BankTransaction(
+            date=transaction_date,
+            bank=BankName.MONO,
+            account_number=account_number,
+            currency=currency,
+            document_number=document_number,
+            debit=debit,
+            credit=credit,
+            counterparty=counterparty,
+            counterparty_account=counterparty_account,
+            payment_purpose=payment_purpose,
+            counterparty_tax_id=counterparty_tax_id,
+        )
+    except ValidationError as error:
+        raise InvalidBankRowError(
+            f"File '{path.name}', row {row_number}: invalid transaction values"
+        ) from error
 
 
 def parse_mono_file(
@@ -70,8 +107,26 @@ def parse_mono_file(
 ) -> list[BankTransaction]:
     transactions: list[BankTransaction] = []
 
-    with path.open(encoding="utf-8-sig", newline="") as file:
+    with open_bank_csv(path, encoding="utf-8-sig") as file:
         reader = csv.DictReader(file, delimiter=";")
+
+        raw_fieldnames = reader.fieldnames
+
+        normalized_fieldnames = (
+            None
+            if raw_fieldnames is None
+            else [
+                normalize_header(header)
+                for header in raw_fieldnames
+                if header is not None
+            ]
+        )
+
+        validate_required_headers(
+            normalized_fieldnames,
+            MONO_REQUIRED_HEADERS,
+            path,
+        )
 
         for row_number, raw_row in enumerate(reader, start=2):
             row = {

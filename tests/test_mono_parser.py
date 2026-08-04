@@ -3,9 +3,15 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
-from income_book_automation.parsers.mono import parse_mono_file, parse_mono_row
+import pytest
 
 from income_book_automation.models import BankName
+from income_book_automation.parsers.errors import (
+    BankStatementReadError,
+    InvalidBankRowError,
+    MissingBankColumnError,
+)
+from income_book_automation.parsers.mono import parse_mono_file, parse_mono_row
 
 TEST_ACCOUNT = "UA000000000000000000000000001"
 
@@ -82,3 +88,45 @@ def test_parse_mono_file_normalizes_headers_and_direction(tmp_path: Path) -> Non
     assert transactions[1].debit == Decimal("25.00")
     assert transactions[1].credit == Decimal("0.00")
     assert transactions[1].date == date(2026, 7, 8)
+
+
+def test_parse_mono_file_rejects_missing_required_header(
+    tmp_path: Path,
+) -> None:
+    row = _mono_row()
+    del row["Деталі операції"]
+
+    source_path = tmp_path / "missing-header-mono.csv"
+    with source_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=row.keys(), delimiter=";")
+        writer.writeheader()
+        writer.writerow(row)
+
+    with pytest.raises(MissingBankColumnError, match="Деталі операції"):
+        parse_mono_file(source_path, account_number=TEST_ACCOUNT)
+
+
+def test_parse_mono_row_wraps_unknown_direction() -> None:
+    row = _mono_row()
+    row["Вид операції (дебет/кредит)"] = "Unknown"
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match=(
+            r"row 7, column 'Вид операції \(дебет/кредит\)': "
+            "unsupported transaction direction"
+        ),
+    ):
+        parse_mono_row(
+            row,
+            Path("synthetic-mono.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+        )
+
+
+def test_parse_mono_file_wraps_missing_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "missing-mono.csv"
+
+    with pytest.raises(BankStatementReadError, match="missing-mono.csv"):
+        parse_mono_file(source_path, account_number=TEST_ACCOUNT)

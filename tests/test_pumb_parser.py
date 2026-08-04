@@ -3,7 +3,15 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from income_book_automation.models import BankName
+from income_book_automation.parsers.errors import (
+    BankStatementFormatError,
+    BankStatementReadError,
+    InvalidBankRowError,
+    MissingBankColumnError,
+)
 from income_book_automation.parsers.pumb import parse_pumb_file, parse_pumb_row
 
 
@@ -90,3 +98,57 @@ def test_parse_pumb_file_reads_cp1251_rows(tmp_path: Path) -> None:
     assert transactions[1].credit == Decimal("0.00")
     assert transactions[1].debit == Decimal("25.00")
     assert transactions[1].date == date(2026, 7, 8)
+
+
+def test_parse_pumb_file_rejects_missing_required_header(
+    tmp_path: Path,
+) -> None:
+    row = _pumb_row()
+    del row["CR"]
+
+    source_path = tmp_path / "missing-header-pumb.csv"
+    with source_path.open("w", encoding="cp1251", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=row.keys(), delimiter=";")
+        writer.writeheader()
+        writer.writerow(row)
+
+    with pytest.raises(MissingBankColumnError, match="'CR'"):
+        parse_pumb_file(source_path)
+
+
+def test_parse_pumb_row_wraps_unknown_currency() -> None:
+    row = _pumb_row()
+    row["CUR_NUMB"] = "999"
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match="row 7, column 'CUR_NUMB': unsupported currency code",
+    ):
+        parse_pumb_row(row, Path("synthetic-pumb.csv"), 7)
+
+
+def test_parse_pumb_row_wraps_invalid_transaction_values() -> None:
+    row = _pumb_row()
+    row["DB"] = "0.00"
+    row["CR"] = "0.00"
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match="row 7: invalid transaction values",
+    ):
+        parse_pumb_row(row, Path("synthetic-pumb.csv"), 7)
+
+
+def test_parse_pumb_file_rejects_empty_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "empty-pumb.csv"
+    source_path.write_text("", encoding="cp1251")
+
+    with pytest.raises(BankStatementFormatError, match="CSV header row is missing"):
+        parse_pumb_file(source_path)
+
+
+def test_parse_pumb_file_wraps_missing_file(tmp_path: Path) -> None:
+    source_path = tmp_path / "missing-pumb.csv"
+
+    with pytest.raises(BankStatementReadError, match="missing-pumb.csv"):
+        parse_pumb_file(source_path)
