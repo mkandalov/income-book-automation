@@ -7,7 +7,10 @@ from pydantic import ValidationError
 from income_book_automation.models import (
     BankName,
     BankTransaction,
+    ClassifiedTransaction,
+    ClientProfile,
     DailyCheckboxRevenue,
+    TransactionCategory,
 )
 
 
@@ -82,3 +85,45 @@ def test_bank_transaction_allows_missing_counterparty_tax_id() -> None:
     transaction = BankTransaction(**fields)
 
     assert transaction.counterparty_tax_id is None
+
+
+def test_client_profile_stores_identity_and_own_accounts() -> None:
+    profile = ClientProfile(
+        client_id="client-001",
+        legal_name="ФОП Тестовий Тарас Іванович",
+        tax_id="1111111111",
+        own_accounts={
+            "UA000000000000000000000000001",
+            "UA000000000000000000000000002",
+        },
+        name_aliases={"Тестовий Тарас Іванович"},
+    )
+
+    assert profile.client_id == "client-001"
+    assert len(profile.own_accounts) == 2
+    assert isinstance(profile.own_accounts, frozenset)
+    assert profile.name_aliases == frozenset({"Тестовий Тарас Іванович"})
+
+
+def test_client_profile_uses_empty_own_accounts_by_default() -> None:
+    profile = ClientProfile(
+        client_id="client-001",
+        legal_name="ФОП Тестовий Тарас Іванович",
+        tax_id="1111111111",
+    )
+
+    assert profile.own_accounts == frozenset()
+
+
+def test_classified_transaction_records_category_and_reason() -> None:
+    transaction = BankTransaction(**_bank_transaction_fields())
+
+    result = ClassifiedTransaction(
+        transaction=transaction,
+        category=TransactionCategory.INCOME,
+        reason="eligible incoming payment",
+    )
+
+    assert result.transaction is transaction
+    assert result.category is TransactionCategory.INCOME
+    assert result.reason == "eligible incoming payment"
