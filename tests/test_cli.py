@@ -13,7 +13,13 @@ runner = CliRunner()
 def test_checkbox_summary_prints_aggregated_totals(tmp_path: Path) -> None:
     workbook = Workbook()
     worksheet = workbook.active
-    worksheet.append([f"column_{index}" for index in range(COLUMN_COUNT)])
+    headers: list[object] = [None] * COLUMN_COUNT
+    headers[1] = "Дата відкриття"
+    headers[25] = "Виручка безготівка"
+    headers[26] = "Повернення безготівка"
+    headers[27] = "Виручка готівка"
+    headers[28] = "Повернення готівка"
+    worksheet.append(headers)
 
     row: list[object] = [None] * COLUMN_COUNT
     # Excel stores timestamps without timezone information.

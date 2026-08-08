@@ -1,8 +1,20 @@
 from datetime import date
 from decimal import Decimal
 
-from income_book_automation.models import DailyCheckboxRevenue
-from income_book_automation.rules.income_rules import aggregate_checkbox_by_date
+from income_book_automation.models import (
+    BankName,
+    BankTransaction,
+    ClassifiedTransaction,
+    DailyBankIncome,
+    DailyCheckboxRevenue,
+    DailyIncomeBookEntry,
+    TransactionCategory,
+)
+from income_book_automation.rules.income_rules import (
+    aggregate_bank_income_by_date,
+    aggregate_checkbox_by_date,
+    merge_daily_income,
+)
 
 
 def _record(
@@ -19,6 +31,31 @@ def _record(
         card_refund=Decimal(card_refund),
         cash_revenue=Decimal(cash_revenue),
         cash_refund=Decimal(cash_refund),
+    )
+
+
+def _classified_transaction(
+    day: int,
+    amount: str,
+    category: TransactionCategory,
+) -> ClassifiedTransaction:
+    transaction = BankTransaction(
+        date=date(2026, 6, day),
+        bank=BankName.PUMB,
+        account_number="UA000000000000000000000000001",
+        currency="UAH",
+        document_number=f"TEST-{day}-{amount}",
+        debit=Decimal("0.00"),
+        credit=Decimal(amount),
+        counterparty="ТОВ Тестовий платник",
+        counterparty_account="UA000000000000000000000000002",
+        payment_purpose="Оплата за тестові послуги",
+        counterparty_tax_id="2222222222",
+    )
+    return ClassifiedTransaction(
+        transaction=transaction,
+        category=category,
+        reason="synthetic test classification",
     )
 
 
@@ -66,3 +103,96 @@ def test_aggregate_checkbox_by_date_groups_and_sorts_records() -> None:
 
 def test_aggregate_checkbox_by_date_accepts_empty_list() -> None:
     assert aggregate_checkbox_by_date([]) == []
+
+
+def test_aggregate_bank_income_by_date_groups_sorts_and_filters() -> None:
+    last_income_record = _classified_transaction(
+        1,
+        "5.00",
+        TransactionCategory.INCOME,
+    )
+    ignored_record = _classified_transaction(
+        3,
+        "99.00",
+        TransactionCategory.EXCLUDED,
+    )
+    records = [
+        _classified_transaction(2, "20.00", TransactionCategory.INCOME),
+        _classified_transaction(1, "10.00", TransactionCategory.INCOME),
+        last_income_record,
+        _classified_transaction(1, "99.00", TransactionCategory.OWN_TRANSFER),
+        _classified_transaction(2, "99.00", TransactionCategory.EXCLUDED),
+        _classified_transaction(2, "99.00", TransactionCategory.NEEDS_REVIEW),
+        ignored_record,
+    ]
+
+    result = aggregate_bank_income_by_date(records)
+
+    assert result == [
+        DailyBankIncome(date=date(2026, 6, 1), amount=Decimal("15.00")),
+        DailyBankIncome(date=date(2026, 6, 2), amount=Decimal("20.00")),
+    ]
+    assert last_income_record.transaction.date == date(2026, 6, 1)
+    assert ignored_record.transaction.date == date(2026, 6, 3)
+
+
+def test_aggregate_bank_income_by_date_accepts_empty_list() -> None:
+    assert aggregate_bank_income_by_date([]) == []
+
+
+def test_merge_daily_income_uses_all_dates_and_omits_zero_rows() -> None:
+    checkbox_records = [
+        _record(
+            1,
+            card_revenue=0,
+            card_refund=0,
+            cash_revenue=0,
+            cash_refund=0,
+        ),
+        _record(
+            2,
+            card_revenue=100,
+            card_refund=10,
+            cash_revenue=50,
+            cash_refund=0,
+        ),
+        _record(
+            3,
+            card_revenue=0,
+            card_refund=0,
+            cash_revenue=25,
+            cash_refund=0,
+        ),
+    ]
+    bank_records = [
+        DailyBankIncome(date=date(2026, 6, 2), amount=Decimal("20.00")),
+        DailyBankIncome(date=date(2026, 6, 4), amount=Decimal("30.00")),
+    ]
+
+    result = merge_daily_income(checkbox_records, bank_records)
+
+    assert result == [
+        DailyIncomeBookEntry(
+            date=date(2026, 6, 2),
+            checkbox_card_income=Decimal("90.00"),
+            checkbox_cash_income=Decimal("50.00"),
+            bank_income=Decimal("20.00"),
+        ),
+        DailyIncomeBookEntry(
+            date=date(2026, 6, 3),
+            checkbox_card_income=Decimal("0.00"),
+            checkbox_cash_income=Decimal("25.00"),
+            bank_income=Decimal("0.00"),
+        ),
+        DailyIncomeBookEntry(
+            date=date(2026, 6, 4),
+            checkbox_card_income=Decimal("0.00"),
+            checkbox_cash_income=Decimal("0.00"),
+            bank_income=Decimal("30.00"),
+        ),
+    ]
+    assert result[0].total_income == Decimal("160.00")
+
+
+def test_merge_daily_income_accepts_empty_sources() -> None:
+    assert merge_daily_income([], []) == []

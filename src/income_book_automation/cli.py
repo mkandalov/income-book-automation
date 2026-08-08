@@ -7,7 +7,26 @@ from typing import Annotated
 import typer
 from rich.console import Console
 
-from income_book_automation.parsers.checkbox import parse_checkbox_file
+from income_book_automation.config import (
+    ClientConfigError,
+    load_client_profile,
+)
+from income_book_automation.exporters.income_book import (
+    IncomeBookExportError,
+)
+from income_book_automation.models import BankName
+from income_book_automation.parsers.checkbox import (
+    CheckboxParseError,
+    parse_checkbox_file,
+)
+from income_book_automation.parsers.errors import (
+    BankStatementParseError,
+)
+from income_book_automation.pipeline import (
+    BankStatementSource,
+    IncomeBookPipelineError,
+    run_income_book_pipeline,
+)
 from income_book_automation.rules.income_rules import aggregate_checkbox_by_date
 
 app = typer.Typer(
@@ -24,6 +43,146 @@ def main() -> None:
 
 
 @app.command()
+def generate(
+    config_path: Annotated[
+        Path,
+        typer.Option(
+            "--config",
+            help="Path to the private client YAML configuration.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    banks: Annotated[
+        list[BankName],
+        typer.Option(
+            "--bank",
+            help="Bank statement format; repeat for multiple statements.",
+            case_sensitive=False,
+        ),
+    ],
+    bank_statement_paths: Annotated[
+        list[Path],
+        typer.Option(
+            "--bank-statement",
+            help="Path to a bank statement; repeat in the same order as --bank.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    checkbox_path: Annotated[
+        Path,
+        typer.Option(
+            "--checkbox",
+            help="Path to Checkbox XLSX report.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    template_path: Annotated[
+        Path,
+        typer.Option(
+            "--template",
+            help="Path to existing income-book template.",
+            exists=True,
+            dir_okay=False,
+            readable=True,
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        typer.Option(
+            "--output",
+            help="Path for the generated income book.",
+            dir_okay=False,
+        ),
+    ],
+    sheet_name: Annotated[
+        str,
+        typer.Option(
+            "--sheet",
+            help="Income-book worksheet name.",
+        ),
+    ],
+    mono_accounts: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--mono-account",
+            "--statement-account",
+            help=("Mono statement IBAN; repeat once for each Mono statement."),
+        ),
+    ] = None,
+) -> None:
+    """Generate an income book from bank and Checkbox source files."""
+    if len(banks) != len(bank_statement_paths):
+        raise typer.BadParameter("each --bank must have a matching --bank-statement")
+
+    mono_accounts = mono_accounts or []
+
+    mono_statement_count = sum(bank is BankName.MONO for bank in banks)
+
+    if len(mono_accounts) != mono_statement_count:
+        raise typer.BadParameter(
+            f"expected {mono_statement_count} --mono-account "
+            f"values, got {len(mono_accounts)}"
+        )
+
+    mono_account_iterator = iter(mono_accounts)
+
+    bank_statements = [
+        BankStatementSource(
+            bank=bank,
+            path=path,
+            account_number=(
+                next(mono_account_iterator).strip().upper()
+                if bank is BankName.MONO
+                else None
+            ),
+        )
+        for bank, path in zip(
+            banks,
+            bank_statement_paths,
+            strict=True,
+        )
+    ]
+
+    try:
+        client = load_client_profile(config_path)
+
+        result = run_income_book_pipeline(
+            client=client,
+            bank_statements=bank_statements,
+            checkbox_path=checkbox_path,
+            template_path=template_path,
+            output_path=output_path,
+            sheet_name=sheet_name,
+        )
+
+    except (
+        ClientConfigError,
+        BankStatementParseError,
+        CheckboxParseError,
+        IncomeBookExportError,
+        IncomeBookPipelineError,
+    ) as error:
+        console.print("[bold red]Processing failed[/bold red]")
+        console.print(str(error))
+        raise typer.Exit(code=1) from error
+
+    console.print("[bold green]Income book created[/bold green]")
+    console.print(f"Output: {result.output_path}")
+    console.print(f"Processed days: {len(result.daily_entries)}")
+    console.print(f"Bank transactions: {len(result.classified_transactions)}")
+    console.print(f"Needs manual review: {len(result.needs_review)}")
+    console.print(
+        f"Duplicate transactions skipped: {len(result.duplicate_transactions)}"
+    )
+
+
+@app.command()
 def checkbox_summary(
     path: Annotated[
         Path,
@@ -36,14 +195,15 @@ def checkbox_summary(
     ],
 ) -> None:
     """Parse a Checkbox workbook and print daily revenue totals."""
-    records = parse_checkbox_file(path)
+    try:
+        records = parse_checkbox_file(path)
+    except CheckboxParseError as error:
+        print(f"Error: {error}")
+        raise SystemExit(1) from error
 
     daily_records = aggregate_checkbox_by_date(records)
 
-    card_total = sum(
-        (record.card_net for record in daily_records),
-        Decimal(0),
-    )
+    card_total = sum((record.card_net for record in daily_records), Decimal(0))
 
     cash_total = sum((record.cash_net for record in daily_records), Decimal(0))
 
