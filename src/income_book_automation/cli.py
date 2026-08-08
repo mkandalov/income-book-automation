@@ -23,6 +23,7 @@ from income_book_automation.parsers.errors import (
     BankStatementParseError,
 )
 from income_book_automation.pipeline import (
+    BankStatementSource,
     IncomeBookPipelineError,
     run_income_book_pipeline,
 )
@@ -53,19 +54,19 @@ def generate(
             readable=True,
         ),
     ],
-    bank: Annotated[
-        BankName,
+    banks: Annotated[
+        list[BankName],
         typer.Option(
             "--bank",
-            help="Bank statement format.",
+            help="Bank statement format; repeat for multiple statements.",
             case_sensitive=False,
         ),
     ],
-    bank_statement_path: Annotated[
-        Path,
+    bank_statement_paths: Annotated[
+        list[Path],
         typer.Option(
             "--bank-statement",
-            help="Path to the bank statement.",
+            help="Path to a bank statement; repeat in the same order as --bank.",
             exists=True,
             dir_okay=False,
             readable=True,
@@ -106,27 +107,58 @@ def generate(
             help="Income-book worksheet name.",
         ),
     ],
-    statement_account: Annotated[
-        str | None,
+    mono_accounts: Annotated[
+        list[str] | None,
         typer.Option(
+            "--mono-account",
             "--statement-account",
-            help="Statement IBAN; required for Mono.",
+            help=("Mono statement IBAN; repeat once for each Mono statement."),
         ),
     ] = None,
 ) -> None:
     """Generate an income book from bank and Checkbox source files."""
+    if len(banks) != len(bank_statement_paths):
+        raise typer.BadParameter("each --bank must have a matching --bank-statement")
+
+    mono_accounts = mono_accounts or []
+
+    mono_statement_count = sum(bank is BankName.MONO for bank in banks)
+
+    if len(mono_accounts) != mono_statement_count:
+        raise typer.BadParameter(
+            f"expected {mono_statement_count} --mono-account "
+            f"values, got {len(mono_accounts)}"
+        )
+
+    mono_account_iterator = iter(mono_accounts)
+
+    bank_statements = [
+        BankStatementSource(
+            bank=bank,
+            path=path,
+            account_number=(
+                next(mono_account_iterator).strip().upper()
+                if bank is BankName.MONO
+                else None
+            ),
+        )
+        for bank, path in zip(
+            banks,
+            bank_statement_paths,
+            strict=True,
+        )
+    ]
+
     try:
         client = load_client_profile(config_path)
 
         result = run_income_book_pipeline(
             client=client,
-            bank=bank,
-            bank_statement_path=bank_statement_path,
+            bank_statements=bank_statements,
             checkbox_path=checkbox_path,
             template_path=template_path,
             output_path=output_path,
             sheet_name=sheet_name,
-            statement_account=statement_account,
         )
 
     except (
@@ -145,6 +177,9 @@ def generate(
     console.print(f"Processed days: {len(result.daily_entries)}")
     console.print(f"Bank transactions: {len(result.classified_transactions)}")
     console.print(f"Needs manual review: {len(result.needs_review)}")
+    console.print(
+        f"Duplicate transactions skipped: {len(result.duplicate_transactions)}"
+    )
 
 
 @app.command()

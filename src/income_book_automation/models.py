@@ -56,6 +56,7 @@ class BankName(StrEnum):
     PUMB = "pumb"
     PRIVAT = "privat"
     MONO = "mono"
+    ABANK = "abank"
 
 
 class TransactionCategory(StrEnum):

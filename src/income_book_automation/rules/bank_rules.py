@@ -9,6 +9,7 @@ from income_book_automation.models import (
 
 EXCLUDED_PAYMENT_RULES = (
     ("повернення коштів", "refund payment"),
+    ("Повернення", "refund"),
     (
         "поворотна фінансова допомога",
         "returnable financial assistance",
