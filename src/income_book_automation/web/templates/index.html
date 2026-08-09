@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="uk">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <title>{{ page_title }}</title>
+</head>
+
+<body>
+    <main>
+    <h1>Формування книги доходів</h1>
+
+    <p>
+        Завантажте банківські виписки, звіт Checkbox
+        та шаблон книги доходів.
+    </p>
+
+    <form
+        action="/generate"
+        method="post"
+        enctype="multipart/form-data"
+    >
+        <section>
+            <h2>Профіль клієнта</h2>
+
+            <input
+                type="file"
+                name="config_file"
+                accept=".yaml,.yml"
+                required
+            >
+        </section>
+        <section>
+            <h2>Банківські виписки</h2>
+
+            <div id="bank-statements">
+                <fieldset class="bank-statement">
+                    <label>
+                        Банк
+
+                        <select name="banks" required>
+                            {% for bank in banks %}
+                                <option value="{{ bank.value }}">
+                                    {{ bank.value | upper }}
+                                </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label>
+                        Виписка CSV
+
+                        <input
+                            type="file"
+                            name="bank_statements"
+                            accept=".csv"
+                            required
+                        >
+                    </label>
+
+                    <label>
+                        IBAN рахунку для Mono
+
+                        <input
+                            type="text"
+                            name="account_numbers"
+                            placeholder="Залиште порожнім для інших банків"
+                        >
+                    </label>
+                </fieldset>
+            </div>
+
+            <button type="button" id="add-statement">
+                Додати ще одну виписку
+            </button>
+        </section>
+
+        <section>
+            <h2>Checkbox</h2>
+
+            <input
+                type="file"
+                name="checkbox_report"
+                accept=".xlsx"
+                required
+            >
+        </section>
+
+        <section>
+            <h2>Книга доходів</h2>
+
+            <label>
+                Шаблон книги
+
+                <input
+                    type="file"
+                    name="template_file"
+                    accept=".xlsx"
+                    required
+                >
+            </label>
+
+            <label>
+                Назва листа
+
+                <input
+                    type="text"
+                    name="sheet_name"
+                    value="2026"
+                    required
+                >
+            </label>
+        </section>
+
+        <button type="submit">
+            Сформувати книгу доходів
+        </button>
+    </form>
+</main>
+<script>
+    const statementList = document.querySelector("#bank-statements");
+    const addStatementButton = document.querySelector("#add-statement");
+    const firstStatement = document.querySelector(".bank-statement");
+
+    addStatementButton.addEventListener("click", () => {
+        const newStatement = firstStatement.cloneNode(true);
+
+        newStatement.querySelectorAll("input").forEach((input) => {
+            input.value = "";
+        });
+
+        newStatement.querySelector("select").selectedIndex = 0;
+        statementList.append(newStatement);
+    });
+</script>
+</body>
+</html>
