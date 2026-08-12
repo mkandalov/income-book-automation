@@ -1,138 +1,586 @@
-<!doctype html>
-<html lang="uk">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+{% extends "base.html" %}
 
-    <title>{{ page_title }}</title>
-</head>
+{% block content %}
+    <section class="hero">
+        <p class="eyebrow">Підготовка документа</p>
 
-<body>
-    <main>
-    <h1>Формування книги доходів</h1>
+        <h1>Формування книги доходів</h1>
 
-    <p>
-        Завантажте банківські виписки, звіт Checkbox
-        та шаблон книги доходів.
-    </p>
+        <p class="hero__lead">
+            Додайте банківські виписки, звіт Checkbox і шаблон книги.
+            Сервіс перевірить файли, об’єднає дані та підготує Excel.
+        </p>
+
+        <div class="hero__meta" aria-label="Підтримувані формати">
+            <span class="meta-pill">PUMB · Privat · Mono · А-Банк</span>
+            <span class="meta-pill">CSV + XLSX</span>
+            <span class="meta-pill">До 10 виписок</span>
+        </div>
+    </section>
 
     <form
+        class="workflow-form"
+        id="income-book-form"
         action="/generate"
         method="post"
         enctype="multipart/form-data"
     >
-        <section>
-            <h2>Профіль клієнта</h2>
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">01</span>
 
-            <input
-                type="file"
-                name="config_file"
-                accept=".yaml,.yml"
-                required
-            >
-        </section>
-        <section>
-            <h2>Банківські виписки</h2>
-
-            <div id="bank-statements">
-                <fieldset class="bank-statement">
-                    <label>
-                        Банк
-
-                        <select name="banks" required>
-                            {% for bank in banks %}
-                                <option value="{{ bank.value }}">
-                                    {{ bank.value | upper }}
-                                </option>
-                            {% endfor %}
-                        </select>
-                    </label>
-
-                    <label>
-                        Виписка CSV
-
-                        <input
-                            type="file"
-                            name="bank_statements"
-                            accept=".csv"
-                            required
-                        >
-                    </label>
-
-                    <label>
-                        IBAN рахунку для Mono
-
-                        <input
-                            type="text"
-                            name="account_numbers"
-                            placeholder="Залиште порожнім для інших банків"
-                        >
-                    </label>
-                </fieldset>
+                <div>
+                    <h2>Профіль клієнта</h2>
+                    <p>Конфігурація визначає ФОП, власні рахунки та правила перевірки.</p>
+                </div>
             </div>
 
-            <button type="button" id="add-statement">
-                Додати ще одну виписку
-            </button>
+            <div class="field">
+                <span class="field__label">Файл конфігурації YAML</span>
+
+                <div class="file-control">
+                    <input
+                        class="upload-file-input"
+                        type="file"
+                        name="config_file"
+                        accept=".yaml,.yml"
+                        aria-label="Файл конфігурації YAML"
+                        required
+                    >
+
+                    <button
+                        class="clear-file-button"
+                        type="button"
+                        hidden
+                    >
+                        Очистити
+                    </button>
+                </div>
+
+                <span class="field__hint">Підтримуються файли .yaml та .yml</span>
+            </div>
         </section>
 
-        <section>
-            <h2>Checkbox</h2>
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">02</span>
 
-            <input
-                type="file"
-                name="checkbox_report"
-                accept=".xlsx"
-                required
+                <div>
+                    <h2>Банківські виписки</h2>
+                    <p>Оберіть банк для кожної виписки. IBAN потрібен лише для Mono.</p>
+                </div>
+            </div>
+
+            <div class="statements" id="bank-statements">
+                <article class="statement-card bank-statement">
+                    <div class="statement-card__top">
+                        <h3 class="statement-card__title">
+                            Виписка 1
+                        </h3>
+
+                        <button
+                            class="text-button remove-statement"
+                            type="button"
+                            hidden
+                        >
+                            Видалити
+                        </button>
+                    </div>
+
+                    <div class="statement-card__fields">
+                        <label class="field">
+                            <span class="field__label">Банк</span>
+
+                            <select class="bank-select" name="banks" required>
+                                {% for bank in banks %}
+                                    <option value="{{ bank.value }}">
+                                        {% if bank.value == "pumb" %}
+                                            ПУМБ
+                                        {% elif bank.value == "privat" %}
+                                            ПриватБанк
+                                        {% elif bank.value == "mono" %}
+                                            Mono
+                                        {% elif bank.value == "abank" %}
+                                            А-Банк
+                                        {% endif %}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <div class="field">
+                            <span class="field__label">Виписка CSV</span>
+
+                            <div class="file-control">
+                                <input
+                                    class="upload-file-input"
+                                    type="file"
+                                    name="bank_statements"
+                                    accept=".csv"
+                                    aria-label="Банківська виписка CSV"
+                                    required
+                                >
+
+                                <button
+                                    class="clear-file-button"
+                                    type="button"
+                                    hidden
+                                >
+                                    Очистити
+                                </button>
+                            </div>
+                        </div>
+
+                        <label class="field field--full mono-account" hidden>
+                            <span class="field__label">IBAN рахунку Mono</span>
+
+                            <input
+                                type="text"
+                                name="account_numbers"
+                                placeholder="UA000000000000000000000000000"
+                                autocomplete="off"
+                                spellcheck="false"
+                            >
+
+                            <span class="field__hint">
+                                Пробіли будуть видалені автоматично
+                            </span>
+                        </label>
+                    </div>
+                </article>
+            </div>
+
+            <div class="section-actions">
+                <button class="secondary-button" type="button" id="add-statement">
+                    + Додати виписку
+                </button>
+
+                <p class="statement-status" id="statement-status" aria-live="polite">
+                    1 з 10 виписок
+                </p>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">03</span>
+
+                <div>
+                    <h2>Дані Checkbox</h2>
+                    <p>
+                        Завантажте Звіт по Z-звітам із Checkbox за той самий календарний місяць.
+                    </p>
+                </div>
+            </div>
+
+            <div class="field">
+                <span class="field__label">Звіт по Z-звітам Checkbox XLSX</span>
+
+                <div class="file-control">
+                    <input
+                        class="upload-file-input"
+                        type="file"
+                        name="checkbox_report"
+                        accept=".xlsx"
+                        aria-label="Звіт по Z-звітам Checkbox XLSX"
+                        required
+                    >
+
+                    <button
+                        class="clear-file-button"
+                        type="button"
+                        hidden
+                    >
+                        Очистити
+                    </button>
+                </div>
+
+                <span class="field__hint">
+                    Інші типи звітів Checkbox не підтримуються.
+                </span>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">04</span>
+
+                <div>
+                    <h2>Книга доходів</h2>
+                    <p>Оберіть шаблон і вкажіть назву робочого листа.</p>
+                </div>
+            </div>
+
+            <div class="field-grid">
+                <div class="field">
+                    <span class="field__label">Шаблон книги XLSX</span>
+
+                    <div class="file-control">
+                        <input
+                            class="upload-file-input"
+                            type="file"
+                            name="template_file"
+                            accept=".xlsx"
+                            aria-label="Шаблон книги XLSX"
+                            required
+                        >
+
+                        <button
+                            class="clear-file-button"
+                            type="button"
+                            hidden
+                        >
+                            Очистити
+                        </button>
+                    </div>
+                </div>
+
+                <label class="field">
+                    <span class="field__label">Назва листа</span>
+
+                    <input
+                        type="text"
+                        name="sheet_name"
+                        value="2026"
+                        required
+                    >
+
+                    <span class="field__hint">Наприклад: 2026</span>
+                </label>
+
+                <label class="field field--full">
+                    <span class="field__label">Назва готового файлу</span>
+
+                    <input
+                        id="output-filename"
+                        type="text"
+                        name="output_filename"
+                        maxlength="180"
+                        placeholder="Книга доходів 2026.xlsx"
+                        autocomplete="off"
+                        required
+                    >
+
+                    <span class="field__hint">
+                        Після вибору шаблону тут з’явиться його назва.
+                        Її можна змінити перед формуванням книги.
+                    </span>
+                </label>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">05</span>
+
+                <div>
+                    <h2>Допоміжні колонки</h2>
+                    <p>
+                        Вкажіть, у які колонки записати складові доходу за видами розрахунків.
+                        Стандартний порядок J–M уже обрано.
+                    </p>
+                </div>
+            </div>
+
+            {% set helper_fields = [
+                {
+                    "name": "helper_total_column",
+                    "title": "Загальна сума",
+                    "description": "Сума Checkbox і банківських надходжень",
+                    "default": 10,
+                    "default_letter": "J"
+                },
+                {
+                    "name": "checkbox_card_column",
+                    "title": "Checkbox — безготівка",
+                    "description": "Оплати карткою за звітом Checkbox",
+                    "default": 11,
+                    "default_letter": "K"
+                },
+                {
+                    "name": "checkbox_cash_column",
+                    "title": "Checkbox — готівка",
+                    "description": "Готівкові оплати за звітом Checkbox",
+                    "default": 12,
+                    "default_letter": "L"
+                },
+                {
+                    "name": "bank_income_column",
+                    "title": "Перекази ФОП/ТОВ",
+                    "description": "Доходи з банківських виписок",
+                    "default": 13,
+                    "default_letter": "M"
+                }
+            ] %}
+
+            {% set helper_column_options = [
+                (10, "J"), (11, "K"), (12, "L"), (13, "M"),
+                (14, "N"), (15, "O")
+            ] %}
+
+            <div class="helper-columns-grid">
+                {% for field in helper_fields %}
+                    <label class="helper-column-card">
+                        <span class="helper-column-card__copy">
+                            <span class="helper-column-card__title">
+                                {{ field.title }}
+                            </span>
+
+                            <span class="helper-column-card__description">
+                                {{ field.description }}
+                            </span>
+                        </span>
+
+                        <span class="helper-column-card__control">
+                            <span class="helper-column-card__default">
+                                Стандартно {{ field.default_letter }}
+                            </span>
+
+                            <select
+                                class="helper-column-select"
+                                name="{{ field.name }}"
+                                aria-label="Колонка: {{ field.title }}"
+                                required
+                            >
+                                {% for column_number, column_letter in helper_column_options %}
+                                    <option
+                                        value="{{ column_number }}"
+                                        {% if column_number == field.default %}selected{% endif %}
+                                    >
+                                        {{ column_letter }} · колонка {{ column_number }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </span>
+                    </label>
+                {% endfor %}
+            </div>
+
+            <p
+                class="field-error"
+                id="helper-columns-error"
+                role="alert"
+                hidden
             >
+                Кожен показник має бути призначений окремій колонці.
+            </p>
         </section>
 
-        <section>
-            <h2>Книга доходів</h2>
+        <aside class="manual-warning" aria-labelledby="manual-warning-title">
+            <span class="manual-warning__mark" aria-hidden="true">!</span>
 
-            <label>
-                Шаблон книги
+            <div>
+                <h2 id="manual-warning-title">
+                    Увага!
+                </h2>
 
-                <input
-                    type="file"
-                    name="template_file"
-                    accept=".xlsx"
-                    required
-                >
-            </label>
+                <p>
+                    <strong>
+                    В частині розшифровки доходів за видами розрахунків можливо вносити зміни.
+                    Але необхідно потім перевірити та за необхідністю виправити суму доходів,
+                    що відображається в книзі за ті дні, де робили зміни.
+                    </strong>
+                </p>
+            </div>
+        </aside>
 
-            <label>
-                Назва листа
+        <div class="submit-panel">
+            <p>
+                Після перевірки браузер автоматично завантажить готовий Excel.
+            </p>
 
-                <input
-                    type="text"
-                    name="sheet_name"
-                    value="2026"
-                    required
-                >
-            </label>
-        </section>
-
-        <button type="submit">
-            Сформувати книгу доходів
-        </button>
+            <button class="submit-button" id="submit-button" type="submit">
+                <span class="button-spinner" aria-hidden="true"></span>
+                <span id="submit-label">Сформувати книгу</span>
+            </button>
+        </div>
     </form>
-</main>
-<script>
-    const statementList = document.querySelector("#bank-statements");
-    const addStatementButton = document.querySelector("#add-statement");
-    const firstStatement = document.querySelector(".bank-statement");
+{% endblock %}
 
-    addStatementButton.addEventListener("click", () => {
-        const newStatement = firstStatement.cloneNode(true);
+{% block scripts %}
+    <script>
+        const maxStatements = 10;
+        const form = document.querySelector("#income-book-form");
+        const statementList = document.querySelector("#bank-statements");
+        const addStatementButton = document.querySelector("#add-statement");
+        const statementStatus = document.querySelector("#statement-status");
+        const submitButton = document.querySelector("#submit-button");
+        const submitLabel = document.querySelector("#submit-label");
+        const templateFileInput = form.querySelector(
+            'input[name="template_file"]',
+        );
+        const outputFilenameInput = document.querySelector("#output-filename");
+        const helperColumnSelects = [
+            ...form.querySelectorAll(".helper-column-select"),
+        ];
+        const helperColumnsError = document.querySelector(
+            "#helper-columns-error",
+        );
+        const statementTemplate = statementList
+            .querySelector(".bank-statement")
+            .cloneNode(true);
 
-        newStatement.querySelectorAll("input").forEach((input) => {
-            input.value = "";
+        function validateHelperColumns() {
+            const selectedColumns = helperColumnSelects.map(
+                (select) => select.value,
+            );
+            const columnCounts = selectedColumns.reduce((counts, column) => {
+                counts.set(column, (counts.get(column) || 0) + 1);
+                return counts;
+            }, new Map());
+            const duplicatedColumns = new Set(
+                [...columnCounts.entries()]
+                    .filter(([, count]) => count > 1)
+                    .map(([column]) => column),
+            );
+            const hasDuplicates = duplicatedColumns.size > 0;
+            const message = hasDuplicates
+                ? "Кожен показник має бути призначений окремій колонці."
+                : "";
+
+            helperColumnSelects.forEach((select) => {
+                const isDuplicated = duplicatedColumns.has(select.value);
+
+                select.setCustomValidity(isDuplicated ? message : "");
+                select.closest(".helper-column-card").classList.toggle(
+                    "has-error",
+                    isDuplicated,
+                );
+            });
+            helperColumnsError.hidden = !hasDuplicates;
+        }
+
+        function updateFileControl(input) {
+            const clearButton = input
+                .closest(".file-control")
+                .querySelector(".clear-file-button");
+
+            clearButton.hidden = input.files.length === 0;
+        }
+
+        function updateMonoField(statement) {
+            const bankSelect = statement.querySelector(".bank-select");
+            const accountField = statement.querySelector(".mono-account");
+            const accountInput = accountField.querySelector("input");
+            const isMono = bankSelect.value === "mono";
+
+            accountField.hidden = !isMono;
+            accountInput.required = isMono;
+
+            if (!isMono) {
+                accountInput.value = "";
+            }
+        }
+
+        function updateStatements() {
+            const statements = [...statementList.querySelectorAll(".bank-statement")];
+            const canRemove = statements.length > 1;
+
+            statements.forEach((statement, index) => {
+                statement.querySelector(".statement-card__title").textContent =
+                    `Виписка ${index + 1}`;
+                statement.querySelector(".remove-statement").hidden = !canRemove;
+                updateMonoField(statement);
+            });
+
+            addStatementButton.disabled = statements.length >= maxStatements;
+            statementStatus.textContent = `${statements.length} з ${maxStatements} виписок`;
+        }
+
+        addStatementButton.addEventListener("click", () => {
+            const statementCount = statementList.querySelectorAll(".bank-statement").length;
+
+            if (statementCount >= maxStatements) {
+                return;
+            }
+
+            const newStatement = statementTemplate.cloneNode(true);
+
+            newStatement.querySelectorAll("input").forEach((input) => {
+                input.value = "";
+            });
+            newStatement.querySelectorAll(".clear-file-button").forEach(
+                (button) => {
+                    button.hidden = true;
+                },
+            );
+
+            newStatement.querySelector("select").selectedIndex = 0;
+            statementList.append(newStatement);
+            updateStatements();
         });
 
-        newStatement.querySelector("select").selectedIndex = 0;
-        statementList.append(newStatement);
-    });
-</script>
-</body>
-</html>
+        statementList.addEventListener("change", (event) => {
+            if (event.target.matches(".bank-select")) {
+                updateMonoField(event.target.closest(".bank-statement"));
+            }
+        });
+
+        statementList.addEventListener("click", (event) => {
+            const removeButton = event.target.closest(".remove-statement");
+
+            if (!removeButton) {
+                return;
+            }
+
+            removeButton.closest(".bank-statement").remove();
+            updateStatements();
+        });
+
+        helperColumnSelects.forEach((select) => {
+            select.addEventListener("change", validateHelperColumns);
+        });
+
+        form.addEventListener("change", (event) => {
+            if (event.target.matches(".upload-file-input")) {
+                updateFileControl(event.target);
+            }
+        });
+
+        form.addEventListener("click", (event) => {
+            const clearButton = event.target.closest(".clear-file-button");
+
+            if (!clearButton) {
+                return;
+            }
+
+            const input = clearButton
+                .closest(".file-control")
+                .querySelector(".upload-file-input");
+            const previousFilename = input.files[0]?.name;
+
+            input.value = "";
+            updateFileControl(input);
+
+            if (
+                input === templateFileInput
+                && outputFilenameInput.value === previousFilename
+            ) {
+                outputFilenameInput.value = "";
+            }
+        });
+
+        templateFileInput.addEventListener("change", () => {
+            const selectedTemplate = templateFileInput.files[0];
+
+            if (selectedTemplate) {
+                outputFilenameInput.value = selectedTemplate.name;
+            }
+        });
+
+        form.addEventListener("submit", () => {
+            form.classList.add("is-submitting");
+            submitButton.disabled = true;
+            submitLabel.textContent = "Формуємо книгу…";
+        });
+
+        window.addEventListener("pageshow", () => {
+            form.classList.remove("is-submitting");
+            submitButton.disabled = false;
+            submitLabel.textContent = "Сформувати книгу";
+        });
+
+        updateStatements();
+        validateHelperColumns();
+    </script>
+{% endblock %}

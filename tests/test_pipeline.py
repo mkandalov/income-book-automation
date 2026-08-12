@@ -6,12 +6,15 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.models import (
     BankName,
     BankTransaction,
     ClientProfile,
     TransactionCategory,
 )
+from income_book_automation.parsers.checkbox import CheckboxFormatError
+from income_book_automation.parsers.errors import BankStatementFormatError
 from income_book_automation.pipeline import (
     BankStatementSource,
     IncomeBookPipelineError,
@@ -233,6 +236,12 @@ def test_run_income_book_pipeline_processes_sources_and_exports_workbook(
         template_path=template_path,
         output_path=output_path,
         sheet_name="2026",
+        helper_columns=HelperColumnMapping(
+            total=10,
+            checkbox_card=12,
+            checkbox_cash=13,
+            bank_income=14,
+        ),
     )
 
     assert result.output_path == output_path
@@ -253,11 +262,60 @@ def test_run_income_book_pipeline_processes_sources_and_exports_workbook(
     try:
         sheet = workbook["2026"]
         assert sheet["B6"].value == 160
-        assert sheet["K6"].value == 90
-        assert sheet["L6"].value == 50
-        assert sheet["M6"].value == 20
+        assert sheet["J6"].value == "=L6+M6+N6"
+        assert sheet["K6"].value is None
+        assert sheet["L6"].value == 90
+        assert sheet["M6"].value == 50
+        assert sheet["N6"].value == 20
     finally:
         workbook.close()
+
+
+def test_pipeline_names_original_bank_file_and_selected_bank(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "uploaded-privat.csv"
+    statement_path.write_text("not a PUMB statement", encoding="utf-8")
+
+    with pytest.raises(
+        BankStatementFormatError,
+        match="uploaded-privat.csv.*ПУМБ",
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=tmp_path / "ZReport.xlsx",
+            template_path=tmp_path / "income-book.xlsx",
+            output_path=tmp_path / "output.xlsx",
+            sheet_name="2026",
+        )
+
+
+def test_pipeline_identifies_wrong_checkbox_z_report(tmp_path: Path) -> None:
+    statement_path = tmp_path / "bank.csv"
+    checkbox_path = tmp_path / "wrong-checkbox-report.xlsx"
+
+    _write_pumb_statement(statement_path)
+
+    workbook = Workbook()
+    workbook.active.append(["Це інший звіт Checkbox"])
+    workbook.save(checkbox_path)
+    workbook.close()
+
+    with pytest.raises(
+        CheckboxFormatError,
+        match="wrong-checkbox-report.xlsx.*Z-звіт Checkbox",
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=checkbox_path,
+            template_path=tmp_path / "income-book.xlsx",
+            output_path=tmp_path / "output.xlsx",
+            sheet_name="2026",
+        )
 
 
 def test_run_income_book_pipeline_requires_statement_account_for_mono(
@@ -265,7 +323,7 @@ def test_run_income_book_pipeline_requires_statement_account_for_mono(
 ) -> None:
     with pytest.raises(
         MissingStatementAccountError,
-        match="requires an account number",
+        match="Mono «statement.csv» потрібно вказати IBAN",
     ):
         run_income_book_pipeline(
             client=_client_profile(),
@@ -358,7 +416,10 @@ def test_run_income_book_pipeline_rejects_duplicate_statement_files(
     _write_pumb_statement(first_statement_path)
     renamed_copy_path.write_bytes(first_statement_path.read_bytes())
 
-    with pytest.raises(IncomeBookPipelineError, match="duplicates"):
+    with pytest.raises(
+        IncomeBookPipelineError,
+        match="renamed-copy.csv.*повторює.*first-statement.csv",
+    ):
         run_income_book_pipeline(
             client=_client_profile(),
             bank_statements=[

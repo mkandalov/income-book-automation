@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
-from income_book_automation.exporters.income_book import export_income_book
+from income_book_automation.exporters.income_book import (
+    HelperColumnMapping,
+    export_income_book,
+)
 from income_book_automation.models import (
     BankName,
     BankTransaction,
@@ -14,7 +17,17 @@ from income_book_automation.models import (
     TransactionCategory,
 )
 from income_book_automation.parsers.abank import parse_abank_file
-from income_book_automation.parsers.checkbox import parse_checkbox_file
+from income_book_automation.parsers.checkbox import (
+    CheckboxFormatError,
+    CheckboxParseError,
+    InvalidCheckboxRowError,
+    parse_checkbox_file,
+)
+from income_book_automation.parsers.errors import (
+    BankStatementFormatError,
+    BankStatementReadError,
+    InvalidBankRowError,
+)
 from income_book_automation.parsers.mono import parse_mono_file
 from income_book_automation.parsers.privat import parse_privat_file
 from income_book_automation.parsers.pumb import parse_pumb_file
@@ -33,6 +46,14 @@ class IncomeBookPipelineError(Exception):
 
 class MissingStatementAccountError(IncomeBookPipelineError):
     """Raised when a Mono statement account was not provided."""
+
+
+BANK_DISPLAY_NAMES = {
+    BankName.PUMB: "ПУМБ",
+    BankName.PRIVAT: "ПриватБанк",
+    BankName.MONO: "Mono",
+    BankName.ABANK: "А-Банк",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +84,8 @@ def _calculate_file_hash(path: Path) -> str:
         content = path.read_bytes()
     except OSError as error:
         raise IncomeBookPipelineError(
-            f"Can't read bank statement file '{path.name}'"
+            f"Не вдалося прочитати банківську виписку «{path.name}» "
+            "під час перевірки файлу. Виберіть її ще раз."
         ) from error
 
     return sha256(content).hexdigest()
@@ -75,7 +97,8 @@ def _validate_statement_accounts(
     for statement in bank_statements:
         if statement.bank is BankName.MONO and not statement.account_number:
             raise MissingStatementAccountError(
-                f"Mono statement '{statement.path.name}' requires an account number"
+                f"Для банківської виписки Mono «{statement.path.name}» "
+                "потрібно вказати IBAN рахунку."
             )
 
 
@@ -90,8 +113,9 @@ def _validate_unique_statement_files(
 
         if original_path is not None:
             raise IncomeBookPipelineError(
-                f"Bank statement '{statement.path.name}' duplicates "
-                f"'{original_path.name}'"
+                f"Банківська виписка «{statement.path.name}» повторює "
+                f"вже доданий файл «{original_path.name}». Видаліть один "
+                "із цих файлів."
             )
 
         paths_by_hash[file_hash] = statement.path
@@ -131,6 +155,7 @@ def run_income_book_pipeline(
     output_path: Path,
     sheet_name: str,
     statement_account: str | None = None,
+    helper_columns: HelperColumnMapping | None = None,
 ) -> PipelineResult:
     if bank_statements is None:
         if bank is None or bank_statement_path is None:
@@ -148,13 +173,30 @@ def run_income_book_pipeline(
 
     bank_transactions: list[BankTransaction] = []
     for statement in bank_statements:
-        bank_transactions.extend(
-            _parse_bank_statement(
+        try:
+            transactions = _parse_bank_statement(
                 statement.path,
                 statement.bank,
                 account_number=statement.account_number,
             )
-        )
+        except InvalidBankRowError as error:
+            bank_name = BANK_DISPLAY_NAMES[statement.bank]
+
+            raise InvalidBankRowError(
+                f"У банківській виписці «{statement.path.name}», вибраній "
+                f"для банку {bank_name}, знайдено некоректні дані. "
+                f"Деталі: {error}"
+            ) from error
+        except (BankStatementReadError, BankStatementFormatError) as error:
+            bank_name = BANK_DISPLAY_NAMES[statement.bank]
+
+            raise BankStatementFormatError(
+                f"Файл «{statement.path.name}» не вдалося прочитати як "
+                f"виписку банку {bank_name}. Перевірте, чи для цього файлу "
+                "правильно вибрано банк і чи виписку експортовано у форматі CSV."
+            ) from error
+
+        bank_transactions.extend(transactions)
     deduplication_result = deduplicate_bank_transaction(bank_transactions)
     classified_transactions = [
         classify_bank_transaction(transaction, client)
@@ -163,7 +205,24 @@ def run_income_book_pipeline(
 
     bank_income = aggregate_bank_income_by_date(classified_transactions)
 
-    checkbox_records = parse_checkbox_file(checkbox_path)
+    try:
+        checkbox_records = parse_checkbox_file(checkbox_path)
+    except CheckboxFormatError as error:
+        raise CheckboxFormatError(
+            f"Файл «{checkbox_path.name}» не розпізнано як Z-звіт Checkbox. "
+            "Завантажте саме Z-звіт Checkbox у форматі XLSX."
+        ) from error
+    except InvalidCheckboxRowError as error:
+        raise InvalidCheckboxRowError(
+            f"У Z-звіті Checkbox «{checkbox_path.name}» знайдено "
+            f"некоректні дані. Деталі: {error}"
+        ) from error
+    except CheckboxParseError as error:
+        raise CheckboxParseError(
+            f"Не вдалося прочитати файл «{checkbox_path.name}» як Z-звіт "
+            "Checkbox. Перевірте файл і повторіть завантаження."
+        ) from error
+
     checkbox_income = aggregate_checkbox_by_date(checkbox_records)
 
     daily_entries = merge_daily_income(checkbox_income, bank_income)
@@ -173,6 +232,7 @@ def run_income_book_pipeline(
         output_path,
         daily_entries,
         sheet_name=sheet_name,
+        helper_columns=helper_columns,
     )
 
     return PipelineResult(

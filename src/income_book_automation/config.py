@@ -23,7 +23,7 @@ class ClientConfigValidationError(ClientConfigError):
 def load_client_profile(config_path: Path) -> ClientProfile:
     try:
         config_text = config_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeError) as exc:
         raise ClientConfigReadError(
             f"cannot read client config: {config_path}"
         ) from exc

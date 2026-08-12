@@ -1,7 +1,10 @@
+from urllib.parse import quote
+
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from pytest import MonkeyPatch
 
+from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.web.app import app
 from income_book_automation.web.processing import (
     UploadInputError,
@@ -11,13 +14,26 @@ from income_book_automation.web.processing import (
 client = TestClient(app)
 
 
-def _post_generate() -> Response:
+def _post_generate(
+    *,
+    output_filename: str = "custom-income-book.xlsx",
+    template_filename: str = "template.xlsx",
+    helper_total_column: int = 10,
+    checkbox_card_column: int = 11,
+    checkbox_cash_column: int = 12,
+    bank_income_column: int = 13,
+) -> Response:
     return client.post(
         "/generate",
         data={
             "banks": ["pumb"],
             "account_numbers": [""],
             "sheet_name": "2026",
+            "output_filename": output_filename,
+            "helper_total_column": helper_total_column,
+            "checkbox_card_column": checkbox_card_column,
+            "checkbox_cash_column": checkbox_cash_column,
+            "bank_income_column": bank_income_column,
         },
         files=[
             (
@@ -42,7 +58,7 @@ def _post_generate() -> Response:
             (
                 "template_file",
                 (
-                    "template.xlsx",
+                    template_filename,
                     b"synthetic-template",
                     (
                         "application/vnd.openxmlformats-officedocument."
@@ -67,6 +83,13 @@ def test_index_returns_html_page() -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Формування книги доходів" in response.text
+    assert 'name="output_filename"' in response.text
+    assert 'name="helper_total_column"' in response.text
+    assert 'name="checkbox_card_column"' in response.text
+    assert 'name="checkbox_cash_column"' in response.text
+    assert 'name="bank_income_column"' in response.text
+    assert response.text.count('class="clear-file-button"') == 4
+    assert "Звіт по Z-звітам Checkbox XLSX" in response.text
 
 
 def test_generate_returns_downloadable_excel(
@@ -96,12 +119,91 @@ def test_generate_returns_downloadable_excel(
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     assert response.headers["content-disposition"] == (
-        'attachment; filename="income-book-result.xlsx"'
+        'attachment; filename="custom-income-book.xlsx"'
     )
     assert response.headers["x-processed-days"] == "3"
     assert response.headers["x-bank-transactions"] == "10"
     assert response.headers["x-needs-review"] == "1"
     assert response.headers["x-duplicates-skipped"] == "2"
+
+
+def test_generate_forwards_custom_helper_columns(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    received_mappings: list[HelperColumnMapping] = []
+
+    def fake_generate(**kwargs: object) -> WebGenerationResult:
+        helper_columns = kwargs["helper_columns"]
+        assert isinstance(helper_columns, HelperColumnMapping)
+        received_mappings.append(helper_columns)
+
+        return WebGenerationResult(
+            content=b"synthetic-generated-excel",
+            processed_days=1,
+            bank_transactions=1,
+            needs_review=0,
+            duplicate_transactions=0,
+        )
+
+    monkeypatch.setattr(
+        ("income_book_automation.web.app.generate_income_book_from_uploads"),
+        fake_generate,
+    )
+
+    response = _post_generate(
+        helper_total_column=10,
+        checkbox_card_column=12,
+        checkbox_cash_column=13,
+        bank_income_column=14,
+    )
+
+    assert response.status_code == 200
+    assert received_mappings == [
+        HelperColumnMapping(
+            total=10,
+            checkbox_card=12,
+            checkbox_cash=13,
+            bank_income=14,
+        )
+    ]
+
+
+def test_generate_rejects_duplicate_helper_columns() -> None:
+    response = _post_generate(
+        helper_total_column=10,
+        checkbox_card_column=10,
+    )
+
+    assert response.status_code == 400
+    assert "helper columns must be unique" in response.text
+
+
+def test_generate_supports_unicode_output_filename(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    def fake_generate(**_: object) -> WebGenerationResult:
+        return WebGenerationResult(
+            content=b"synthetic-generated-excel",
+            processed_days=1,
+            bank_transactions=1,
+            needs_review=0,
+            duplicate_transactions=0,
+        )
+
+    monkeypatch.setattr(
+        ("income_book_automation.web.app.generate_income_book_from_uploads"),
+        fake_generate,
+    )
+
+    filename = "Книга доходів липень 2026"
+    response = _post_generate(output_filename=filename)
+
+    expected_filename = quote(f"{filename}.xlsx", safe="")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == (
+        f"attachment; filename*=UTF-8''{expected_filename}"
+    )
 
 
 def test_generate_returns_bad_request_for_processing_error(

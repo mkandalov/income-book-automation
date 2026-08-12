@@ -1,27 +1,21 @@
-<!doctype html>
-<html lang="uk">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+{% extends "base.html" %}
 
-    <title>{{ page_title }}</title>
-</head>
+{% block content %}
+    <section class="error-card">
+        <span class="error-card__label">Помилка обробки</span>
 
-<body>
-    <main>
         <h1>Не вдалося сформувати книгу доходів</h1>
 
-        <p>
-            Під час обробки файлів виникла помилка:
+        <p class="error-card__description">
+            Перевірте вказаний нижче файл або поле та спробуйте ще раз.
         </p>
 
-        <p>
+        <p class="error-message">
             <strong>{{ error_message }}</strong>
         </p>
 
-        <a href="/">
+        <a class="back-link" href="/">
             Повернутися до форми
         </a>
-    </main>
-</body>
-</html>
+    </section>
+{% endblock %}

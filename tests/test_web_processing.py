@@ -1,9 +1,11 @@
 from io import BytesIO
+from types import SimpleNamespace
 
 import pytest
 from fastapi import UploadFile
 from pytest import MonkeyPatch
 
+from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.models import BankName
 from income_book_automation.web import processing
 
@@ -51,7 +53,7 @@ def test_validate_upload_accepts_yaml_extensions(filename: str) -> None:
 
     processing._validate_upload(
         upload,
-        label="Client configuration",
+        label="Профіль клієнта",
         allowed_extensions=processing.YAML_EXTENSIONS,
     )
 
@@ -61,11 +63,14 @@ def test_validate_upload_accepts_yaml_extensions(filename: str) -> None:
 def test_validate_upload_rejects_wrong_extension() -> None:
     with pytest.raises(
         processing.UploadInputError,
-        match="must use one of these extensions",
+        match=(
+            "Файл у полі «Банківська виписка»: «statement.pdf» "
+            "має непідтримуваний формат"
+        ),
     ):
         processing._validate_upload(
             _upload("statement.pdf"),
-            label="Bank statement",
+            label="Банківська виписка",
             allowed_extensions=processing.CSV_EXTENSIONS,
         )
 
@@ -73,11 +78,11 @@ def test_validate_upload_rejects_wrong_extension() -> None:
 def test_validate_upload_rejects_empty_file() -> None:
     with pytest.raises(
         processing.UploadInputError,
-        match="cannot be empty",
+        match="Файл у полі «Банківська виписка»: «statement.csv» порожній",
     ):
         processing._validate_upload(
             _upload("statement.csv", b""),
-            label="Bank statement",
+            label="Банківська виписка",
             allowed_extensions=processing.CSV_EXTENSIONS,
         )
 
@@ -89,11 +94,11 @@ def test_validate_upload_rejects_oversized_file(
 
     with pytest.raises(
         processing.UploadInputError,
-        match="exceeds the maximum size",
+        match="Файл у полі «Банківська виписка»: «statement.csv» перевищує",
     ):
         processing._validate_upload(
             _upload("statement.csv", b"12345"),
-            label="Bank statement",
+            label="Банківська виписка",
             allowed_extensions=processing.CSV_EXTENSIONS,
         )
 
@@ -103,7 +108,7 @@ def test_validate_request_rejects_too_many_bank_statements() -> None:
 
     with pytest.raises(
         processing.UploadInputError,
-        match="No more than",
+        match="не більше",
     ):
         _validate_request(
             banks=[BankName.PUMB] * statement_count,
@@ -117,7 +122,7 @@ def test_validate_request_rejects_too_many_bank_statements() -> None:
 def test_validate_request_rejects_mismatched_statement_fields() -> None:
     with pytest.raises(
         processing.UploadInputError,
-        match="Each bank statement must have",
+        match="Для кожної банківської виписки",
     ):
         _validate_request(
             banks=[BankName.PUMB, BankName.ABANK],
@@ -129,7 +134,7 @@ def test_validate_request_rejects_mismatched_statement_fields() -> None:
 def test_validate_request_rejects_blank_sheet_name() -> None:
     with pytest.raises(
         processing.UploadInputError,
-        match="Sheet name cannot be empty",
+        match="Вкажіть назву листа",
     ):
         _validate_request(sheet_name="   ")
 
@@ -137,7 +142,7 @@ def test_validate_request_rejects_blank_sheet_name() -> None:
 def test_validate_request_requires_mono_iban() -> None:
     with pytest.raises(
         processing.UploadInputError,
-        match="requires an IBAN",
+        match="Mono «statement.csv» потрібно вказати IBAN",
     ):
         _validate_request(
             banks=[BankName.MONO],
@@ -161,3 +166,145 @@ def test_validate_request_ignores_account_for_other_banks() -> None:
     )
 
     assert result == [None]
+
+
+def test_generate_from_uploads_forwards_helper_columns(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    helper_columns = HelperColumnMapping(
+        total=10,
+        checkbox_card=12,
+        checkbox_cash=13,
+        bank_income=14,
+    )
+    forwarded_helper_columns: list[HelperColumnMapping | None] = []
+    forwarded_filenames: list[tuple[str, str, str, str]] = []
+
+    def fake_load_client_profile(path: processing.Path) -> object:
+        forwarded_filenames.append((path.name, "", "", ""))
+        return object()
+
+    monkeypatch.setattr(processing, "load_client_profile", fake_load_client_profile)
+
+    def fake_run_income_book_pipeline(**kwargs: object) -> SimpleNamespace:
+        forwarded_helper_columns.append(kwargs["helper_columns"])
+        output_path = kwargs["output_path"]
+        bank_statements = kwargs["bank_statements"]
+        checkbox_path = kwargs["checkbox_path"]
+        template_path = kwargs["template_path"]
+        assert isinstance(output_path, processing.Path)
+        assert isinstance(bank_statements, list)
+        assert isinstance(checkbox_path, processing.Path)
+        assert isinstance(template_path, processing.Path)
+
+        forwarded_filenames[0] = (
+            forwarded_filenames[0][0],
+            bank_statements[0].path.name,
+            checkbox_path.name,
+            template_path.name,
+        )
+        output_path.write_bytes(b"generated-workbook")
+
+        return SimpleNamespace(
+            daily_entries=(),
+            classified_transactions=(),
+            needs_review=(),
+            duplicate_transactions=(),
+        )
+
+    monkeypatch.setattr(
+        processing,
+        "run_income_book_pipeline",
+        fake_run_income_book_pipeline,
+    )
+
+    result = processing.generate_income_book_from_uploads(
+        config_file=_upload("client-original.yaml"),
+        banks=[BankName.PUMB],
+        bank_statements=[_upload("bank-original.csv")],
+        account_numbers=[""],
+        checkbox_report=_upload("ZReport-original.xlsx"),
+        template_file=_upload("income-book-original.xlsx"),
+        sheet_name="2026",
+        helper_columns=helper_columns,
+    )
+
+    assert result.content == b"generated-workbook"
+    assert forwarded_helper_columns == [helper_columns]
+    assert forwarded_filenames == [
+        (
+            "client-original.yaml",
+            "bank-original.csv",
+            "ZReport-original.xlsx",
+            "income-book-original.xlsx",
+        )
+    ]
+
+
+def test_upload_filename_removes_windows_directories() -> None:
+    upload = _upload(r"C:\Users\Worker\Downloads\statement-original.csv")
+
+    assert processing._upload_filename(
+        upload,
+        fallback_name="fallback.csv",
+    ) == "statement-original.csv"
+
+
+def test_config_error_names_profile_field_and_original_file(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    def fake_load_client_profile(_path: processing.Path) -> object:
+        raise processing.ClientConfigError("synthetic config error")
+
+    monkeypatch.setattr(
+        processing,
+        "load_client_profile",
+        fake_load_client_profile,
+    )
+
+    with pytest.raises(
+        processing.ClientConfigError,
+        match="Профіль клієнта «wrong-client.yaml»",
+    ):
+        processing.generate_income_book_from_uploads(
+            config_file=_upload("wrong-client.yaml"),
+            banks=[BankName.PUMB],
+            bank_statements=[_upload("bank.csv")],
+            account_numbers=[""],
+            checkbox_report=_upload("ZReport.xlsx"),
+            template_file=_upload("income-book.xlsx"),
+            sheet_name="2026",
+        )
+
+
+def test_export_error_names_template_field_and_original_file(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        processing,
+        "load_client_profile",
+        lambda _path: object(),
+    )
+
+    def fake_run_income_book_pipeline(**_kwargs: object) -> None:
+        raise processing.IncomeBookExportError("synthetic export error")
+
+    monkeypatch.setattr(
+        processing,
+        "run_income_book_pipeline",
+        fake_run_income_book_pipeline,
+    )
+
+    with pytest.raises(
+        processing.IncomeBookExportError,
+        match="шаблон книги доходів «wrong-income-book.xlsx»",
+    ):
+        processing.generate_income_book_from_uploads(
+            config_file=_upload("client.yaml"),
+            banks=[BankName.PUMB],
+            bank_statements=[_upload("bank.csv")],
+            account_numbers=[""],
+            checkbox_report=_upload("ZReport.xlsx"),
+            template_file=_upload("wrong-income-book.xlsx"),
+            sheet_name="2026",
+        )

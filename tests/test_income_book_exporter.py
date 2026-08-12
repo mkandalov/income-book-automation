@@ -7,7 +7,9 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
 
 from income_book_automation.exporters.income_book import (
+    HelperColumnMapping,
     IncomeBookExportError,
+    InvalidHelperColumnMappingError,
     MissingIncomeBookDateError,
     MissingIncomeBookSheetError,
     export_income_book,
@@ -108,6 +110,80 @@ def test_export_income_book_updates_matching_date_and_preserves_template(
         assert sheet["K6"].fill.fgColor.rgb.endswith("FFFF00")
     finally:
         workbook.close()
+
+
+def test_export_income_book_supports_custom_helper_columns(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_template(template_path)
+
+    helper_columns = HelperColumnMapping(
+        total=10,
+        checkbox_card=12,
+        checkbox_cash=13,
+        bank_income=14,
+    )
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry()],
+        sheet_name="2026",
+        helper_columns=helper_columns,
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+
+        assert sheet["J6"].value == "=L6+M6+N6"
+        assert sheet["K6"].value is None
+        assert sheet["L6"].value == 90
+        assert sheet["M6"].value == 50
+        assert sheet["N6"].value == 20
+    finally:
+        workbook.close()
+
+
+def test_helper_column_mapping_rejects_duplicate_columns() -> None:
+    with pytest.raises(
+        InvalidHelperColumnMappingError,
+        match="must be unique",
+    ):
+        HelperColumnMapping(
+            total=10,
+            checkbox_card=11,
+            checkbox_cash=11,
+            bank_income=13,
+        )
+
+
+def test_helper_column_mapping_rejects_official_columns() -> None:
+    with pytest.raises(
+        InvalidHelperColumnMappingError,
+        match="must start from column 10",
+    ):
+        HelperColumnMapping(
+            total=9,
+            checkbox_card=11,
+            checkbox_cash=12,
+            bank_income=13,
+        )
+
+
+def test_helper_column_mapping_rejects_columns_after_fifteen() -> None:
+    with pytest.raises(
+        InvalidHelperColumnMappingError,
+        match="must not exceed column 15",
+    ):
+        HelperColumnMapping(
+            total=10,
+            checkbox_card=11,
+            checkbox_cash=12,
+            bank_income=16,
+        )
 
 
 def test_export_income_book_rejects_missing_date(tmp_path: Path) -> None:

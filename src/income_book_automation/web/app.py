@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -7,6 +8,7 @@ from fastapi.templating import Jinja2Templates
 
 from income_book_automation.config import ClientConfigError
 from income_book_automation.exporters.income_book import (
+    HelperColumnMapping,
     IncomeBookExportError,
 )
 from income_book_automation.models import BankName
@@ -48,6 +50,37 @@ def index(request: Request) -> HTMLResponse:
 
 
 EXCEL_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+DEFAULT_OUTPUT_FILENAME = "income-book-result.xlsx"
+
+
+def _normalize_output_filename(
+    requested_filename: str,
+    template_filename: str | None,
+) -> str:
+    source = requested_filename.strip() or (template_filename or "").strip()
+    filename = source.replace("\\", "/").rsplit("/", maxsplit=1)[-1]
+    filename = "".join(character for character in filename if character.isprintable())
+    filename = filename.strip().strip(".")
+
+    if not filename:
+        filename = DEFAULT_OUTPUT_FILENAME
+
+    if not filename.casefold().endswith(".xlsx"):
+        filename = f"{filename}.xlsx"
+
+    if len(filename) > 180:
+        filename = f"{filename[:-5][:175]}.xlsx"
+
+    return filename
+
+
+def _content_disposition(filename: str) -> str:
+    encoded_filename = quote(filename, safe="")
+
+    if encoded_filename == filename:
+        return f'attachment; filename="{filename}"'
+
+    return f"attachment; filename*=UTF-8''{encoded_filename}"
 
 
 @app.post("/generate")
@@ -60,8 +93,20 @@ def generate_income_book(
     checkbox_report: Annotated[UploadFile, File()],
     template_file: Annotated[UploadFile, File()],
     sheet_name: Annotated[str, Form()],
+    output_filename: Annotated[str, Form()],
+    helper_total_column: Annotated[int, Form()] = 10,
+    checkbox_card_column: Annotated[int, Form()] = 11,
+    checkbox_cash_column: Annotated[int, Form()] = 12,
+    bank_income_column: Annotated[int, Form()] = 13,
 ) -> Response:
     try:
+        helper_columns = HelperColumnMapping(
+            total=helper_total_column,
+            checkbox_card=checkbox_card_column,
+            checkbox_cash=checkbox_cash_column,
+            bank_income=bank_income_column,
+        )
+
         result = generate_income_book_from_uploads(
             config_file=config_file,
             banks=banks,
@@ -70,6 +115,7 @@ def generate_income_book(
             checkbox_report=checkbox_report,
             template_file=template_file,
             sheet_name=sheet_name,
+            helper_columns=helper_columns,
         )
 
     except (
@@ -89,11 +135,17 @@ def generate_income_book(
             },
             status_code=400,
         )
+
+    download_filename = _normalize_output_filename(
+        output_filename,
+        template_file.filename,
+    )
+
     return Response(
         content=result.content,
         media_type=EXCEL_MEDIA_TYPE,
         headers={
-            "Content-Disposition": ('attachment; filename="income-book-result.xlsx"'),
+            "Content-Disposition": _content_disposition(download_filename),
             "X-Processed-Days": str(result.processed_days),
             "X-Bank-Transactions": str(result.bank_transactions),
             "X-Needs-Review": str(result.needs_review),

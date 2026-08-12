@@ -5,7 +5,11 @@ from tempfile import TemporaryDirectory
 
 from fastapi import UploadFile
 
-from income_book_automation.config import load_client_profile
+from income_book_automation.config import ClientConfigError, load_client_profile
+from income_book_automation.exporters.income_book import (
+    HelperColumnMapping,
+    IncomeBookExportError,
+)
 from income_book_automation.models import BankName
 from income_book_automation.pipeline import (
     BankStatementSource,
@@ -41,14 +45,20 @@ def _validate_upload(
     allowed_extensions: frozenset[str],
 ) -> None:
     if not upload.filename:
-        raise UploadInputError(f"{label} has no filename")
+        raise UploadInputError(f"Для поля «{label}» не вказано назву файлу.")
+
+    filename = _upload_filename(upload, fallback_name="файл без назви")
+    description = f"Файл у полі «{label}»: «{filename}»"
 
     extension = Path(upload.filename).suffix.casefold()
 
     if extension not in allowed_extensions:
         allowed = ", ".join(sorted(allowed_extensions))
 
-        raise UploadInputError(f"{label} must use one of these extensions: {allowed}")
+        raise UploadInputError(
+            f"{description} має непідтримуваний формат. "
+            f"Дозволені розширення: {allowed}."
+        )
 
     try:
         upload.file.seek(0, 2)
@@ -56,15 +66,16 @@ def _validate_upload(
         upload.file.seek(0)
     except (OSError, ValueError) as error:
         raise UploadInputError(
-            f"Cannot inspect uploaded file: {upload.filename}"
+            f"Не вдалося перевірити {description}. Виберіть файл ще раз."
         ) from error
 
     if file_size == 0:
-        raise UploadInputError(f"{label} cannot be empty")
+        raise UploadInputError(f"{description} порожній. Виберіть інший файл.")
 
     if file_size > MAX_UPLOAD_SIZE_BYTES:
         raise UploadInputError(
-            f"{label} exceeds the maximum size of {MAX_UPLOAD_SIZE_MB} MB"
+            f"{description} перевищує максимальний розмір "
+            f"{MAX_UPLOAD_SIZE_MB} МБ."
         )
 
 
@@ -79,34 +90,37 @@ def _validate_request(
     sheet_name: str,
 ) -> list[str | None]:
     if not banks:
-        raise UploadInputError("At least one bank statement is required")
+        raise UploadInputError("Додайте щонайменше одну банківську виписку.")
 
     if len(banks) > MAX_BANK_STATEMENTS:
         raise UploadInputError(
-            f"No more than {MAX_BANK_STATEMENTS} bank statements are allowed"
+            f"Можна додати не більше {MAX_BANK_STATEMENTS} банківських виписок."
         )
 
     if not len(banks) == len(bank_statements) == len(account_numbers):
-        raise UploadInputError("Each bank statement must have a bank and account field")
+        raise UploadInputError(
+            "Для кожної банківської виписки виберіть банк і заповніть "
+            "пов'язане поле рахунку."
+        )
 
     if not sheet_name.strip():
-        raise UploadInputError("Sheet name cannot be empty")
+        raise UploadInputError("Вкажіть назву листа у шаблоні книги доходів.")
 
     _validate_upload(
         config_file,
-        label="Client configuration",
+        label="Профіль клієнта",
         allowed_extensions=YAML_EXTENSIONS,
     )
 
     _validate_upload(
         checkbox_report,
-        label="Checkbox report",
+        label="Z-звіт Checkbox",
         allowed_extensions=XLSX_EXTENSIONS,
     )
 
     _validate_upload(
         template_file,
-        label="Income-book template",
+        label="Шаблон книги доходів",
         allowed_extensions=XLSX_EXTENSIONS,
     )
 
@@ -123,7 +137,7 @@ def _validate_request(
     ):
         _validate_upload(
             statement,
-            label=f"Bank statement {index}",
+            label=f"Банківська виписка {index}",
             allowed_extensions=CSV_EXTENSIONS,
         )
 
@@ -131,7 +145,14 @@ def _validate_request(
             normalized_account = "".join(account_number.split()).upper()
 
             if not normalized_account:
-                raise UploadInputError(f"Mono statement {index} requires an IBAN")
+                statement_name = _upload_filename(
+                    statement,
+                    fallback_name=f"виписка {index}",
+                )
+                raise UploadInputError(
+                    f"Для банківської виписки Mono «{statement_name}» "
+                    "потрібно вказати IBAN рахунку."
+                )
             normalized_accounts.append(normalized_account)
 
         else:
@@ -143,18 +164,54 @@ def _validate_request(
 def _save_upload(
     upload: UploadFile,
     destination: Path,
+    *,
+    label: str,
 ) -> None:
     if not upload.filename:
-        raise UploadInputError("Uploaded file has no name")
+        raise UploadInputError(f"Для поля «{label}» не вказано назву файлу.")
     try:
         upload.file.seek(0)
 
         with destination.open("wb") as output_file:
             copyfileobj(upload.file, output_file)
     except OSError as error:
+        filename = _upload_filename(upload, fallback_name="файл без назви")
         raise UploadInputError(
-            f"Cannot save uploaded file: {upload.filename}"
+            f"Не вдалося підготувати {label} «{filename}» до обробки. "
+            "Виберіть файл ще раз."
         ) from error
+
+
+def _upload_filename(
+    upload: UploadFile,
+    *,
+    fallback_name: str,
+) -> str:
+    raw_filename = (upload.filename or "").replace("\\", "/")
+    filename = raw_filename.rsplit("/", maxsplit=1)[-1].strip()
+    filename = "".join(
+        character for character in filename if character.isprintable()
+    )
+
+    if filename in {"", ".", ".."}:
+        return fallback_name
+
+    return filename
+
+
+def _original_upload_path(
+    workspace: Path,
+    directory_name: str,
+    upload: UploadFile,
+    *,
+    fallback_name: str,
+) -> Path:
+    filename = _upload_filename(upload, fallback_name=fallback_name)
+
+    upload_directory = workspace / directory_name
+    upload_directory.mkdir(parents=True, exist_ok=True)
+
+    return upload_directory / filename
 
 
 def generate_income_book_from_uploads(
@@ -166,6 +223,7 @@ def generate_income_book_from_uploads(
     checkbox_report: UploadFile,
     template_file: UploadFile,
     sheet_name: str,
+    helper_columns: HelperColumnMapping | None = None,
 ) -> WebGenerationResult:
     normalized_accounts = _validate_request(
         config_file=config_file,
@@ -180,24 +238,58 @@ def generate_income_book_from_uploads(
     with TemporaryDirectory(prefix="income-book-") as temporary_directory:
         workspace = Path(temporary_directory)
 
-        config_path = workspace / "client.yaml"
-        checkbox_path = workspace / "checkbox.xlsx"
-        template_path = workspace / "template.xlsx"
+        config_path = _original_upload_path(
+            workspace,
+            "config",
+            config_file,
+            fallback_name="client.yaml",
+        )
+        checkbox_path = _original_upload_path(
+            workspace,
+            "checkbox",
+            checkbox_report,
+            fallback_name="checkbox.xlsx",
+        )
+        template_path = _original_upload_path(
+            workspace,
+            "template",
+            template_file,
+            fallback_name="template.xlsx",
+        )
         output_path = workspace / "result.xlsx"
 
-        _save_upload(config_file, config_path)
-        _save_upload(checkbox_report, checkbox_path)
-        _save_upload(template_file, template_path)
+        _save_upload(config_file, config_path, label="профіль клієнта")
+        _save_upload(checkbox_report, checkbox_path, label="Z-звіт Checkbox")
+        _save_upload(
+            template_file,
+            template_path,
+            label="шаблон книги доходів",
+        )
 
-        client = load_client_profile(config_path)
+        try:
+            client = load_client_profile(config_path)
+        except ClientConfigError as error:
+            raise ClientConfigError(
+                f"Профіль клієнта «{config_path.name}» містить помилку. "
+                "Перевірте структуру та обов'язкові поля YAML-файлу."
+            ) from error
 
         sources: list[BankStatementSource] = []
 
         for index, (bank, statement, normalized_account) in enumerate(
             zip(banks, bank_statements, normalized_accounts, strict=True)
         ):
-            statement_path = workspace / f"statement-{index}.csv"
-            _save_upload(statement, statement_path)
+            statement_path = _original_upload_path(
+                workspace,
+                f"statement-{index}",
+                statement,
+                fallback_name=f"statement-{index}.csv",
+            )
+            _save_upload(
+                statement,
+                statement_path,
+                label=f"банківську виписку {index + 1}",
+            )
 
             sources.append(
                 BankStatementSource(
@@ -206,19 +298,29 @@ def generate_income_book_from_uploads(
                     account_number=normalized_account,
                 )
             )
-        pipeline_result = run_income_book_pipeline(
-            client=client,
-            bank_statements=sources,
-            checkbox_path=checkbox_path,
-            template_path=template_path,
-            output_path=output_path,
-            sheet_name=sheet_name,
-        )
+        try:
+            pipeline_result = run_income_book_pipeline(
+                client=client,
+                bank_statements=sources,
+                checkbox_path=checkbox_path,
+                template_path=template_path,
+                output_path=output_path,
+                sheet_name=sheet_name,
+                helper_columns=helper_columns,
+            )
+        except IncomeBookExportError as error:
+            raise IncomeBookExportError(
+                f"Не вдалося заповнити шаблон книги доходів "
+                f"«{template_path.name}». Перевірте, чи правильно вказано "
+                "назву листа та чи шаблон має потрібну структуру."
+            ) from error
 
         try:
             result_content = output_path.read_bytes()
         except OSError as error:
-            raise UploadInputError("Cannot read generated income book") from error
+            raise UploadInputError(
+                "Не вдалося підготувати готову книгу доходів до завантаження."
+            ) from error
 
         return WebGenerationResult(
             content=result_content,
