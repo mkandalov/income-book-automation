@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Tests and code quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download repository
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: True
+        
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install dependncies
+        run: uv sync --locked --all-groups
+      
+      - name: Check code quality
+        run: uv run --frozen ruff check src tests
+
+      - name: Check formatting
+        run: uv run --frozen ruff format --check src tests
+
+      - name: Run tests
+        run: uv run --frozen pytest -q

@@ -244,10 +244,13 @@ def test_generate_from_uploads_forwards_helper_columns(
 def test_upload_filename_removes_windows_directories() -> None:
     upload = _upload(r"C:\Users\Worker\Downloads\statement-original.csv")
 
-    assert processing._upload_filename(
-        upload,
-        fallback_name="fallback.csv",
-    ) == "statement-original.csv"
+    assert (
+        processing._upload_filename(
+            upload,
+            fallback_name="fallback.csv",
+        )
+        == "statement-original.csv"
+    )
 
 
 def test_config_error_names_profile_field_and_original_file(

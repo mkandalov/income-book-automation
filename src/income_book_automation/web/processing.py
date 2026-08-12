@@ -74,8 +74,7 @@ def _validate_upload(
 
     if file_size > MAX_UPLOAD_SIZE_BYTES:
         raise UploadInputError(
-            f"{description} перевищує максимальний розмір "
-            f"{MAX_UPLOAD_SIZE_MB} МБ."
+            f"{description} перевищує максимальний розмір {MAX_UPLOAD_SIZE_MB} МБ."
         )
 
 
@@ -189,9 +188,7 @@ def _upload_filename(
 ) -> str:
     raw_filename = (upload.filename or "").replace("\\", "/")
     filename = raw_filename.rsplit("/", maxsplit=1)[-1].strip()
-    filename = "".join(
-        character for character in filename if character.isprintable()
-    )
+    filename = "".join(character for character in filename if character.isprintable())
 
     if filename in {"", ".", ".."}:
         return fallback_name

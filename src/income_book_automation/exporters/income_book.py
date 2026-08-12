@@ -89,9 +89,7 @@ class HelperColumnMapping:
             )
 
         if len(set(columns)) != len(columns):
-            raise InvalidHelperColumnMappingError(
-                "helper columns must be unique"
-            )
+            raise InvalidHelperColumnMappingError("helper columns must be unique")
 
 
 def _totalled_columns(
@@ -194,7 +192,6 @@ def _write_daily_entry(
     card_letter = get_column_letter(helper_columns.checkbox_card)
     cash_letter = get_column_letter(helper_columns.checkbox_cash)
     bank_letter = get_column_letter(helper_columns.bank_income)
-
 
     sheet.cell(
         row_number,
