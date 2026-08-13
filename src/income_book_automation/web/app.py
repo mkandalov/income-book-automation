@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
@@ -11,14 +12,18 @@ from income_book_automation.exporters.income_book import (
     HelperColumnMapping,
     IncomeBookExportError,
 )
-from income_book_automation.models import BankName
+from income_book_automation.models import BankName, CheckboxRefundWarning
 from income_book_automation.parsers.checkbox import CheckboxParseError
 from income_book_automation.parsers.errors import (
     BankStatementParseError,
 )
-from income_book_automation.pipeline import IncomeBookPipelineError
+from income_book_automation.pipeline import (
+    IncomeBookPipelineError,
+    UnresolvedTransactionsError,
+)
 from income_book_automation.web.processing import (
     UploadInputError,
+    build_review_transaction_rows,
     generate_income_book_from_uploads,
 )
 
@@ -83,6 +88,24 @@ def _content_disposition(filename: str) -> str:
     return f"attachment; filename*=UTF-8''{encoded_filename}"
 
 
+def _serialize_checkbox_warnings(
+    warnings: tuple[CheckboxRefundWarning, ...],
+) -> str:
+    return json.dumps(
+        [
+            {
+                "date": warning.date.isoformat(),
+                "payment_method": warning.payment_method.value,
+                "revenue": str(warning.revenue),
+                "refund": str(warning.refund),
+                "result": str(warning.result),
+            }
+            for warning in warnings
+        ],
+        separators=(",", ":"),
+    )
+
+
 @app.post("/generate")
 def generate_income_book(
     request: Request,
@@ -117,7 +140,19 @@ def generate_income_book(
             sheet_name=sheet_name,
             helper_columns=helper_columns,
         )
+    except UnresolvedTransactionsError as error:
+        review_rows = build_review_transaction_rows(error.records)
 
+        return templates.TemplateResponse(
+            request=request,
+            name="review.html",
+            context={
+                "page_title": "Потрібна ручна перевірка",
+                "review_rows": review_rows,
+                "review_count": len(review_rows),
+            },
+            status_code=422,
+        )
     except (
         UploadInputError,
         ClientConfigError,
@@ -150,5 +185,9 @@ def generate_income_book(
             "X-Bank-Transactions": str(result.bank_transactions),
             "X-Needs-Review": str(result.needs_review),
             "X-Duplicates-Skipped": str(result.duplicate_transactions),
+            "X-Checkbox-Warnings": _serialize_checkbox_warnings(
+                result.checkbox_warnings
+            ),
+            "X-No-Income": str(result.no_income).lower(),
         },
     )

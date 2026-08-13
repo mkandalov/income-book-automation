@@ -4,15 +4,19 @@ from decimal import Decimal
 from income_book_automation.models import (
     BankName,
     BankTransaction,
+    CheckboxPaymentMethod,
+    CheckboxRefundWarning,
     ClassifiedTransaction,
     DailyBankIncome,
     DailyCheckboxRevenue,
     DailyIncomeBookEntry,
     TransactionCategory,
+    TransactionSource,
 )
 from income_book_automation.rules.income_rules import (
     aggregate_bank_income_by_date,
     aggregate_checkbox_by_date,
+    find_checkbox_refund_warnings,
     merge_daily_income,
 )
 
@@ -40,15 +44,19 @@ def _classified_transaction(
     category: TransactionCategory,
 ) -> ClassifiedTransaction:
     transaction = BankTransaction(
+        source=TransactionSource(
+            original_filename="synthetic-pumb.csv",
+            row_number=day + 1,
+        ),
         date=date(2026, 6, day),
         bank=BankName.PUMB,
-        account_number="UA000000000000000000000000001",
+        account_number="UA273000010000000000000000001",
         currency="UAH",
         document_number=f"TEST-{day}-{amount}",
         debit=Decimal("0.00"),
         credit=Decimal(amount),
         counterparty="ТОВ Тестовий платник",
-        counterparty_account="UA000000000000000000000000002",
+        counterparty_account="UA973000010000000000000000002",
         payment_purpose="Оплата за тестові послуги",
         counterparty_tax_id="2222222222",
     )
@@ -103,6 +111,65 @@ def test_aggregate_checkbox_by_date_groups_and_sorts_records() -> None:
 
 def test_aggregate_checkbox_by_date_accepts_empty_list() -> None:
     assert aggregate_checkbox_by_date([]) == []
+
+
+def test_find_checkbox_refund_warnings_reports_negative_daily_results() -> None:
+    raw_records = [
+        _record(
+            1,
+            card_revenue=100,
+            card_refund=150,
+            cash_revenue=20,
+            cash_refund=0,
+        ),
+        _record(
+            1,
+            card_revenue=50,
+            card_refund=30,
+            cash_revenue=0,
+            cash_refund=25,
+        ),
+        _record(
+            2,
+            card_revenue=100,
+            card_refund=100,
+            cash_revenue=50,
+            cash_refund=40,
+        ),
+    ]
+    daily_records = aggregate_checkbox_by_date(raw_records)
+
+    result = find_checkbox_refund_warnings(daily_records)
+
+    assert result == [
+        CheckboxRefundWarning(
+            date=date(2026, 6, 1),
+            payment_method=CheckboxPaymentMethod.CARD,
+            revenue=Decimal(150),
+            refund=Decimal(180),
+        ),
+        CheckboxRefundWarning(
+            date=date(2026, 6, 1),
+            payment_method=CheckboxPaymentMethod.CASH,
+            revenue=Decimal(20),
+            refund=Decimal(25),
+        ),
+    ]
+    assert result[0].result == Decimal(-30)
+    assert result[1].result == Decimal(-5)
+
+
+def test_find_checkbox_refund_warnings_accepts_empty_and_zero_results() -> None:
+    zero_result = _record(
+        1,
+        card_revenue=100,
+        card_refund=100,
+        cash_revenue=50,
+        cash_refund=50,
+    )
+
+    assert find_checkbox_refund_warnings([]) == []
+    assert find_checkbox_refund_warnings([zero_result]) == []
 
 
 def test_aggregate_bank_income_by_date_groups_sorts_and_filters() -> None:

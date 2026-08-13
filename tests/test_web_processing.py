@@ -1,3 +1,5 @@
+from datetime import date
+from decimal import Decimal
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -6,7 +8,16 @@ from fastapi import UploadFile
 from pytest import MonkeyPatch
 
 from income_book_automation.exporters.income_book import HelperColumnMapping
-from income_book_automation.models import BankName
+from income_book_automation.models import (
+    BankName,
+    BankTransaction,
+    CheckboxPaymentMethod,
+    CheckboxRefundWarning,
+    ClassifiedTransaction,
+    ReviewField,
+    TransactionCategory,
+    TransactionSource,
+)
 from income_book_automation.web import processing
 
 
@@ -18,6 +29,82 @@ def _upload(
         file=BytesIO(content),
         filename=filename,
     )
+
+
+def _review_transaction() -> ClassifiedTransaction:
+    transaction = BankTransaction(
+        source=TransactionSource(
+            original_filename="june-pumb.csv",
+            row_number=17,
+        ),
+        date=date(2026, 6, 15),
+        bank=BankName.PUMB,
+        account_number="UA273000010000000000000000001",
+        currency="UAH",
+        document_number="TEST-REVIEW-001",
+        debit=Decimal("0.00"),
+        credit=Decimal("125.50"),
+        counterparty="",
+        counterparty_account="",
+        counterparty_tax_id=None,
+        payment_purpose="Оплата за послуги",
+    )
+
+    return ClassifiedTransaction(
+        transaction=transaction,
+        category=TransactionCategory.NEEDS_REVIEW,
+        reason="required review fields are missing",
+        missing_fields={
+            ReviewField.COUNTERPARTY,
+            ReviewField.COUNTERPARTY_ACCOUNT,
+            ReviewField.COUNTERPARTY_TAX_ID,
+        },
+    )
+
+
+def test_build_review_transaction_rows_maps_domain_data_for_ui() -> None:
+    result = processing.build_review_transaction_rows((_review_transaction(),))
+
+    assert result == (
+        processing.ReviewTransactionRow(
+            filename="june-pumb.csv",
+            bank="ПУМБ",
+            row_number=17,
+            transaction_date="15.06.2026",
+            amount="125.50 UAH",
+            document_number="TEST-REVIEW-001",
+            counterparty="—",
+            counterparty_account="—",
+            counterparty_tax_id="—",
+            payment_purpose="Оплата за послуги",
+            reason="Відсутні обов’язкові реквізити",
+            missing_fields=(
+                "Контрагент",
+                "IBAN контрагента",
+                "РНОКПП/ЄДРПОУ контрагента",
+            ),
+        ),
+    )
+
+
+def test_build_review_transaction_rows_explains_identity_conflict() -> None:
+    transaction = _review_transaction().transaction.model_copy(
+        update={
+            "counterparty": "Тестовий Тарас Іванович",
+            "counterparty_account": "UA273000010000000000000000001",
+            "counterparty_tax_id": "2222222222",
+        }
+    )
+    record = ClassifiedTransaction(
+        transaction=transaction,
+        category=TransactionCategory.NEEDS_REVIEW,
+        reason="counterparty identity conflicts with client profile",
+    )
+
+    result = processing.build_review_transaction_rows((record,))
+
+    assert result[0].reason == ("Реквізити контрагента суперечать профілю клієнта")
+    assert result[0].missing_fields == ()
 
 
 def _validate_request(
@@ -153,10 +240,21 @@ def test_validate_request_requires_mono_iban() -> None:
 def test_validate_request_normalizes_mono_iban() -> None:
     result = _validate_request(
         banks=[BankName.MONO],
-        account_numbers=[" ua12 3456 7890 "],
+        account_numbers=[" ua27 300001 0000000000000000001 "],
     )
 
-    assert result == ["UA1234567890"]
+    assert result == ["UA273000010000000000000000001"]
+
+
+def test_validate_request_rejects_invalid_mono_iban() -> None:
+    with pytest.raises(
+        processing.UploadInputError,
+        match="Mono «statement.csv».*некоректний український IBAN",
+    ):
+        _validate_request(
+            banks=[BankName.MONO],
+            account_numbers=["UA003000010000000000000000001"],
+        )
 
 
 def test_validate_request_ignores_account_for_other_banks() -> None:
@@ -210,6 +308,15 @@ def test_generate_from_uploads_forwards_helper_columns(
             classified_transactions=(),
             needs_review=(),
             duplicate_transactions=(),
+            checkbox_warnings=(
+                CheckboxRefundWarning(
+                    date=date(2026, 6, 15),
+                    payment_method=CheckboxPaymentMethod.CARD,
+                    revenue=Decimal("5000.00"),
+                    refund=Decimal("8000.00"),
+                ),
+            ),
+            no_income=True,
         )
 
     monkeypatch.setattr(
@@ -230,6 +337,9 @@ def test_generate_from_uploads_forwards_helper_columns(
     )
 
     assert result.content == b"generated-workbook"
+    assert len(result.checkbox_warnings) == 1
+    assert result.checkbox_warnings[0].result == Decimal("-3000.00")
+    assert result.no_income is True
     assert forwarded_helper_columns == [helper_columns]
     assert forwarded_filenames == [
         (

@@ -1,7 +1,11 @@
 from datetime import date
 from decimal import Decimal
 
-from income_book_automation.models import BankName, BankTransaction
+from income_book_automation.models import (
+    BankName,
+    BankTransaction,
+    TransactionSource,
+)
 from income_book_automation.rules.deduplication import (
     deduplicate_bank_transaction,
 )
@@ -10,11 +14,15 @@ from income_book_automation.rules.deduplication import (
 def _transaction(
     *,
     bank: BankName = BankName.PUMB,
-    account_number: str = "UA000000000000000000000000001",
+    account_number: str = "UA273000010000000000000000001",
     document_number: str = "TEST-DOC-001",
-    counterparty_account: str = "UA000000000000000000000000002",
+    counterparty_account: str = "UA973000010000000000000000002",
 ) -> BankTransaction:
     return BankTransaction(
+        source=TransactionSource(
+            original_filename="synthetic-statement.csv",
+            row_number=2,
+        ),
         date=date(2026, 6, 1),
         bank=bank,
         account_number=account_number,
@@ -42,9 +50,9 @@ def test_deduplicate_bank_transaction_separates_duplicate() -> None:
 def test_deduplicate_bank_transaction_normalizes_identifiers() -> None:
     original = _transaction()
     duplicate = _transaction(
-        account_number="ua00 0000000000000000000000001",
+        account_number="ua27 3000010000000000000000001",
         document_number="  test-doc-001  ",
-        counterparty_account="ua00 0000000000000000000000002",
+        counterparty_account="ua97 3000010000000000000000002",
     )
 
     result = deduplicate_bank_transaction([original, duplicate])

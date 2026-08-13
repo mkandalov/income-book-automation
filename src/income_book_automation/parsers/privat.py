@@ -1,15 +1,17 @@
-import csv
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from income_book_automation.models import BankName, BankTransaction
+from income_book_automation.models import BankName, BankTransaction, TransactionSource
 from income_book_automation.parsers.common import (
     open_bank_csv,
+    parse_account_identifier,
     parse_decimal_value,
     parse_dotted_date,
-    validate_required_headers,
+    parse_ukrainian_iban,
+    read_strict_csv_rows,
+    require_non_blank_value,
 )
 from income_book_automation.parsers.errors import InvalidBankRowError
 
@@ -37,7 +39,11 @@ def parse_privat_row(
         row_number,
         "Сума",
     )
-
+    if amount == 0:
+        raise InvalidBankRowError(
+            f"File '{path.name}', row {row_number}, "
+            "column 'Сума': transaction amount must be non-zero"
+        )
     if amount > 0:
         debit = Decimal(0)
         credit = amount
@@ -53,19 +59,41 @@ def parse_privat_row(
         order="DMY",
     )
 
-    account_number = row["Рахунок"].strip()
-    currency = row["Валюта"].strip()
+    account_number = parse_ukrainian_iban(
+        row["Рахунок"],
+        path,
+        row_number,
+        "Рахунок",
+        required=True,
+    )
+
+    currency = require_non_blank_value(
+        row["Валюта"],
+        path,
+        row_number,
+        "Валюта",
+    )
 
     document_number = row["Номер документу"].strip()
 
     counterparty = row["Кореспондент"].strip()
-    counterparty_account = row["Рахунок кореспондента"].strip()
+    counterparty_account = parse_account_identifier(
+        row["Рахунок кореспондента"],
+        path,
+        row_number,
+        "Рахунок кореспондента",
+        required=False,
+    )
     payment_purpose = row["Призначення платежу"].strip()
 
     counterparty_tax_id = row["ЄДРПОУ кореспондента"].strip() or None
 
     try:
         return BankTransaction(
+            source=TransactionSource(
+                original_filename=path.name,
+                row_number=row_number,
+            ),
             date=transaction_date,
             bank=BankName.PRIVAT,
             account_number=account_number,
@@ -86,15 +114,12 @@ def parse_privat_row(
 
 def parse_privat_file(path: Path) -> list[BankTransaction]:
     with open_bank_csv(path, encoding="cp1251") as file:
-        reader = csv.DictReader(file, delimiter=";")
-
-        validate_required_headers(
-            reader.fieldnames,
-            PRIVAT_REQUIRED_HEADERS,
-            path,
+        rows = read_strict_csv_rows(
+            file,
+            path=path,
+            bank_name="PrivatBank",
+            delimiter=";",
+            required_headers=PRIVAT_REQUIRED_HEADERS,
         )
 
-        return [
-            parse_privat_row(row, path, row_number)
-            for row_number, row in enumerate(reader, start=2)
-        ]
+        return [parse_privat_row(row, path, row_number) for row_number, row in rows]

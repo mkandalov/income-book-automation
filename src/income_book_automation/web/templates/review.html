@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <div class="review-page">
+        <section class="review-hero" aria-labelledby="review-title">
+            <div class="review-hero__top">
+                <div>
+                    <span class="review-hero__label">Потрібна ручна перевірка</span>
+
+                    <h1 id="review-title">Перевірте банківські операції</h1>
+
+                    <p class="review-hero__description">
+                        У виписках знайдено операції з неповними реквізитами.
+                        Програма не може безпечно визначити, чи є вони доходом.
+                    </p>
+                </div>
+
+                <div class="review-count" aria-label="Кількість операцій на перевірку">
+                    <strong>{{ review_count }}</strong>
+                    <span>операцій на перевірку</span>
+                </div>
+            </div>
+
+            <p class="review-stop-notice" role="alert">
+                <span>
+                    <strong>Книгу доходів не сформовано.</strong>
+                    Наведені нижче операції не включено до доходу. Виправте
+                    вихідні дані та завантажте файли повторно.
+                </span>
+            </p>
+
+            <ol class="review-instructions" aria-label="Що робити далі">
+                <li>Знайдіть операцію у вказаному CSV-файлі за номером рядка.</li>
+                <li>Перевірте відсутні реквізити у банкінгу або новій виписці.</li>
+                <li>Експортуйте виправлену виписку та повторіть формування книги.</li>
+            </ol>
+        </section>
+
+        <section class="review-table-card" aria-labelledby="review-table-title">
+            <div class="review-table-heading">
+                <div>
+                    <h2 id="review-table-title">Операції, які потребують уваги</h2>
+                    <p>Назва файлу та рядок допоможуть швидко знайти джерело проблеми.</p>
+                </div>
+            </div>
+
+            <div class="review-table-wrap" tabindex="0">
+                <table class="review-table">
+                    <thead>
+                        <tr>
+                            <th scope="col">Джерело</th>
+                            <th scope="col">Операція</th>
+                            <th scope="col">Контрагент</th>
+                            <th scope="col">Призначення</th>
+                            <th scope="col">Причина перевірки</th>
+                        </tr>
+                    </thead>
+
+                    <tbody>
+                        {% for row in review_rows %}
+                            <tr>
+                                <td>
+                                    <div class="review-cell">
+                                        <span class="review-cell__primary">{{ row.filename }}</span>
+                                        <span class="review-cell__line">
+                                            {{ row.bank }} · рядок {{ row.row_number }}
+                                        </span>
+                                    </div>
+                                </td>
+
+                                <td>
+                                    <div class="review-cell">
+                                        <span class="review-cell__primary">{{ row.amount }}</span>
+                                        <span class="review-cell__line">{{ row.transaction_date }}</span>
+                                        <span>
+                                            <span class="review-cell__label">Документ</span><br>
+                                            {{ row.document_number }}
+                                        </span>
+                                    </div>
+                                </td>
+
+                                <td>
+                                    <div class="review-cell">
+                                        <span class="review-cell__primary">{{ row.counterparty }}</span>
+                                        <span>
+                                            <span class="review-cell__label">IBAN</span><br>
+                                            {{ row.counterparty_account }}
+                                        </span>
+                                        <span>
+                                            <span class="review-cell__label">РНОКПП / ЄДРПОУ</span><br>
+                                            {{ row.counterparty_tax_id }}
+                                        </span>
+                                    </div>
+                                </td>
+
+                                <td>
+                                    <div class="review-cell">
+                                        <span class="review-cell__line">{{ row.payment_purpose }}</span>
+                                    </div>
+                                </td>
+
+                                <td>
+                                    <div class="review-cell">
+                                        <span class="review-cell__primary">{{ row.reason }}</span>
+
+                                        {% if row.missing_fields %}
+                                            <span class="review-cell__label">Не вистачає</span>
+
+                                            <ul class="review-missing-list">
+                                                {% for field in row.missing_fields %}
+                                                    <li>{{ field }}</li>
+                                                {% endfor %}
+                                            </ul>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+
+            <div class="review-actions">
+                <p>Після виправлення даних почніть формування книги заново.</p>
+
+                <a class="back-link" href="/">Повернутися до форми</a>
+            </div>
+        </section>
+    </div>
+{% endblock %}

@@ -10,8 +10,18 @@ from income_book_automation.exporters.income_book import (
     HelperColumnMapping,
     IncomeBookExportError,
 )
-from income_book_automation.models import BankName
+from income_book_automation.iban import (
+    InvalidUkrainianIbanError,
+    normalize_ukrainian_iban,
+)
+from income_book_automation.models import (
+    BankName,
+    CheckboxRefundWarning,
+    ClassifiedTransaction,
+    ReviewField,
+)
 from income_book_automation.pipeline import (
+    BANK_DISPLAY_NAMES,
     BankStatementSource,
     run_income_book_pipeline,
 )
@@ -23,6 +33,21 @@ MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 YAML_EXTENSIONS = frozenset({".yaml", ".yml"})
 CSV_EXTENSIONS = frozenset({".csv"})
 XLSX_EXTENSIONS = frozenset({".xlsx"})
+
+REVIEW_FIELD_LABELS = {
+    ReviewField.DOCUMENT_NUMBER: "Номер документа",
+    ReviewField.COUNTERPARTY: "Контрагент",
+    ReviewField.COUNTERPARTY_ACCOUNT: "IBAN контрагента",
+    ReviewField.COUNTERPARTY_TAX_ID: "РНОКПП/ЄДРПОУ контрагента",
+    ReviewField.PAYMENT_PURPOSE: "Призначення платежу",
+}
+
+REVIEW_REASON_LABELS = {
+    "required review fields are missing": "Відсутні обов’язкові реквізити",
+    "counterparty identity conflicts with client profile": (
+        "Реквізити контрагента суперечать профілю клієнта"
+    ),
+}
 
 
 class UploadInputError(Exception):
@@ -36,6 +61,29 @@ class WebGenerationResult:
     bank_transactions: int
     needs_review: int
     duplicate_transactions: int
+    checkbox_warnings: tuple[CheckboxRefundWarning, ...] = ()
+    no_income: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewTransactionRow:
+    filename: str
+    bank: str
+    row_number: int
+    transaction_date: str
+    amount: str
+    document_number: str
+    counterparty: str
+    counterparty_account: str
+    counterparty_tax_id: str
+    payment_purpose: str
+    reason: str
+    missing_fields: tuple[str, ...]
+
+
+def _display_value(value: str | None) -> str:
+    normalized_value = (value or "").strip()
+    return normalized_value or "—"
 
 
 def _validate_upload(
@@ -152,6 +200,18 @@ def _validate_request(
                     f"Для банківської виписки Mono «{statement_name}» "
                     "потрібно вказати IBAN рахунку."
                 )
+
+            try:
+                normalized_account = normalize_ukrainian_iban(normalized_account)
+            except InvalidUkrainianIbanError as error:
+                statement_name = _upload_filename(
+                    statement,
+                    fallback_name=f"виписка {index}",
+                )
+                raise UploadInputError(
+                    f"Для банківської виписки Mono «{statement_name}» "
+                    "вказано некоректний український IBAN."
+                ) from error
             normalized_accounts.append(normalized_account)
 
         else:
@@ -209,6 +269,43 @@ def _original_upload_path(
     upload_directory.mkdir(parents=True, exist_ok=True)
 
     return upload_directory / filename
+
+
+def build_review_transaction_rows(
+    records: tuple[ClassifiedTransaction, ...],
+) -> tuple[ReviewTransactionRow, ...]:
+    rows: list[ReviewTransactionRow] = []
+
+    for record in records:
+        transaction = record.transaction
+
+        missing_fields = tuple(
+            REVIEW_FIELD_LABELS[field]
+            for field in ReviewField
+            if field in record.missing_fields
+        )
+
+        rows.append(
+            ReviewTransactionRow(
+                filename=transaction.source.original_filename,
+                bank=BANK_DISPLAY_NAMES[transaction.bank],
+                row_number=transaction.source.row_number,
+                transaction_date=transaction.date.strftime("%d.%m.%Y"),
+                amount=f"{transaction.credit:.2f} {transaction.currency}",
+                document_number=_display_value(transaction.document_number),
+                counterparty=_display_value(transaction.counterparty),
+                counterparty_account=_display_value(transaction.counterparty_account),
+                counterparty_tax_id=_display_value(transaction.counterparty_tax_id),
+                payment_purpose=_display_value(transaction.payment_purpose),
+                reason=REVIEW_REASON_LABELS.get(
+                    record.reason,
+                    "Операція потребує ручної перевірки",
+                ),
+                missing_fields=missing_fields,
+            )
+        )
+
+    return tuple(rows)
 
 
 def generate_income_book_from_uploads(
@@ -325,4 +422,6 @@ def generate_income_book_from_uploads(
             bank_transactions=len(pipeline_result.classified_transactions),
             needs_review=len(pipeline_result.needs_review),
             duplicate_transactions=len(pipeline_result.duplicate_transactions),
+            checkbox_warnings=tuple(pipeline_result.checkbox_warnings),
+            no_income=pipeline_result.no_income,
         )

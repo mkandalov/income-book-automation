@@ -1,11 +1,11 @@
 client_id: "client-001"
-legal_name: "ФОП Тестовий Тарас Іванович"
+legal_name: "SOLE PROPRIETOR JOHN EXAMPLE"
 tax_id: "0000000000"
 
 own_accounts:
-  - "UA000000000000000000000000001"
-  - "UA000000000000000000000000002"
+  - "UA273000010000000000000000001"
+  - "UA973000010000000000000000002"
 
 name_aliases:
-  - "Тестовий Тарас Іванович"
-  - "ФОП Тестовий Т. І."
+  - "JOHN EXAMPLE"
+  - "FOP JOHN EXAMPLE"

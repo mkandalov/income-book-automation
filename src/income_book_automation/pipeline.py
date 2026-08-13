@@ -11,8 +11,10 @@ from income_book_automation.exporters.income_book import (
 from income_book_automation.models import (
     BankName,
     BankTransaction,
+    CheckboxRefundWarning,
     ClassifiedTransaction,
     ClientProfile,
+    DailyCheckboxRevenue,
     DailyIncomeBookEntry,
     TransactionCategory,
 )
@@ -21,6 +23,7 @@ from income_book_automation.parsers.checkbox import (
     CheckboxFormatError,
     CheckboxParseError,
     InvalidCheckboxRowError,
+    MissingCheckboxColumnError,
     parse_checkbox_file,
 )
 from income_book_automation.parsers.errors import (
@@ -36,6 +39,7 @@ from income_book_automation.rules.deduplication import deduplicate_bank_transact
 from income_book_automation.rules.income_rules import (
     aggregate_bank_income_by_date,
     aggregate_checkbox_by_date,
+    find_checkbox_refund_warnings,
     merge_daily_income,
 )
 
@@ -46,6 +50,23 @@ class IncomeBookPipelineError(Exception):
 
 class MissingStatementAccountError(IncomeBookPipelineError):
     """Raised when a Mono statement account was not provided."""
+
+
+class UnsupportedCurrencyError(IncomeBookPipelineError):
+    """Raised when a statement contains a non-UAH transaction."""
+
+
+class MixedPeriodError(IncomeBookPipelineError):
+    """Raised when uploaded sources contain different calendar months."""
+
+
+class UnresolvedTransactionsError(IncomeBookPipelineError):
+    """Raised when transactions require manual review before export."""
+
+    def __init__(self, records: tuple[ClassifiedTransaction, ...]) -> None:
+        self.records = records
+
+        super().__init__(f"{len(records)} bank transaction(s) require manual review")
 
 
 BANK_DISPLAY_NAMES = {
@@ -69,6 +90,11 @@ class PipelineResult:
     daily_entries: tuple[DailyIncomeBookEntry, ...]
     classified_transactions: tuple[ClassifiedTransaction, ...]
     duplicate_transactions: tuple[BankTransaction, ...]
+    checkbox_warnings: tuple[CheckboxRefundWarning, ...]
+
+    @property
+    def no_income(self) -> bool:
+        return not self.daily_entries
 
     @property
     def needs_review(self) -> tuple[ClassifiedTransaction, ...]:
@@ -119,6 +145,58 @@ def _validate_unique_statement_files(
             )
 
         paths_by_hash[file_hash] = statement.path
+
+
+def _validate_transaction_currencies(
+    transactions: list[BankTransaction],
+) -> None:
+    for transaction in transactions:
+        currency = transaction.currency.strip().upper()
+
+        if currency != "UAH":
+            raise UnsupportedCurrencyError(
+                f"Банківська виписка "
+                f"«{transaction.source.original_filename}», "
+                f"рядок {transaction.source.row_number}: "
+                f"валюта {currency} не підтримується. "
+                "Книга доходів формується лише у валюті UAH."
+            )
+
+
+def _validate_single_processing_period(
+    bank_transactions: list[BankTransaction],
+    checkbox_records: list[DailyCheckboxRevenue],
+    *,
+    checkbox_filename: str,
+) -> None:
+    periods_by_file: dict[str, set[str]] = {}
+
+    for transaction in bank_transactions:
+        filename = transaction.source.original_filename
+        period = f"{transaction.date.year}-{transaction.date.month:02d}"
+
+        periods_by_file.setdefault(filename, set()).add(period)
+
+    checkbox_periods = {
+        f"{record.date.year}-{record.date.month:02d}" for record in checkbox_records
+    }
+
+    periods_by_file[checkbox_filename] = checkbox_periods
+
+    all_periods = {period for periods in periods_by_file.values() for period in periods}
+
+    if len(all_periods) <= 1:
+        return
+
+    details = "; ".join(
+        f"«{filename}»: {', '.join(sorted(periods))}"
+        for filename, periods in periods_by_file.items()
+    )
+
+    raise MixedPeriodError(
+        f"Завантажені файли містять дані за різні місяці: {details}. "
+        "Можна обробити лише один календарний місяць за один запуск."
+    )
 
 
 def _parse_bank_statement(
@@ -179,6 +257,7 @@ def run_income_book_pipeline(
                 statement.bank,
                 account_number=statement.account_number,
             )
+
         except InvalidBankRowError as error:
             bank_name = BANK_DISPLAY_NAMES[statement.bank]
 
@@ -195,7 +274,7 @@ def run_income_book_pipeline(
                 f"виписку банку {bank_name}. Перевірте, чи для цього файлу "
                 "правильно вибрано банк і чи виписку експортовано у форматі CSV."
             ) from error
-
+        _validate_transaction_currencies(transactions)
         bank_transactions.extend(transactions)
     deduplication_result = deduplicate_bank_transaction(bank_transactions)
     classified_transactions = [
@@ -203,10 +282,21 @@ def run_income_book_pipeline(
         for transaction in deduplication_result.unique
     ]
 
+    needs_review = tuple(
+        record
+        for record in classified_transactions
+        if record.category is TransactionCategory.NEEDS_REVIEW
+    )
+
+    if needs_review:
+        raise UnresolvedTransactionsError(needs_review)
+
     bank_income = aggregate_bank_income_by_date(classified_transactions)
 
     try:
         checkbox_records = parse_checkbox_file(checkbox_path)
+    except MissingCheckboxColumnError:
+        raise
     except CheckboxFormatError as error:
         raise CheckboxFormatError(
             f"Файл «{checkbox_path.name}» не розпізнано як Z-звіт Checkbox. "
@@ -223,7 +313,13 @@ def run_income_book_pipeline(
             "Checkbox. Перевірте файл і повторіть завантаження."
         ) from error
 
+    _validate_single_processing_period(
+        bank_transactions,
+        checkbox_records,
+        checkbox_filename=checkbox_path.name,
+    )
     checkbox_income = aggregate_checkbox_by_date(checkbox_records)
+    checkbox_warnings = find_checkbox_refund_warnings(checkbox_income)
 
     daily_entries = merge_daily_income(checkbox_income, bank_income)
 
@@ -240,4 +336,5 @@ def run_income_book_pipeline(
         daily_entries=tuple(daily_entries),
         classified_transactions=tuple(classified_transactions),
         duplicate_transactions=deduplication_result.duplicates,
+        checkbox_warnings=tuple(checkbox_warnings),
     )

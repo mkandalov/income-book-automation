@@ -13,8 +13,8 @@ client_id: "client-001"
 legal_name: "ФОП Тестовий Тарас Іванович"
 tax_id: "0000000000"
 own_accounts:
-  - "UA000000000000000000000000001"
-  - "UA000000000000000000000000002"
+  - "UA273000010000000000000000001"
+  - "UA973000010000000000000000002"
 name_aliases:
   - "Тестовий Тарас Іванович"
 """
@@ -39,8 +39,8 @@ def test_load_client_profile_from_valid_yaml(tmp_path: Path) -> None:
     assert profile.tax_id == "0000000000"
     assert profile.own_accounts == frozenset(
         {
-            "UA000000000000000000000000001",
-            "UA000000000000000000000000002",
+            "UA273000010000000000000000001",
+            "UA973000010000000000000000002",
         }
     )
     assert profile.name_aliases == frozenset({"Тестовий Тарас Іванович"})
@@ -87,6 +87,25 @@ def test_load_client_profile_rejects_missing_required_fields(
     config_path = _write_config(
         tmp_path,
         'client_id: "client-001"\n',
+    )
+
+    with pytest.raises(
+        ClientConfigValidationError,
+        match="invalid client config fields",
+    ):
+        load_client_profile(config_path)
+
+
+def test_load_client_profile_rejects_invalid_own_iban(tmp_path: Path) -> None:
+    config_path = _write_config(
+        tmp_path,
+        """\
+client_id: "client-001"
+legal_name: "ФОП Тестовий Тарас Іванович"
+tax_id: "1111111111"
+own_accounts:
+  - "UA003000010000000000000000001"
+""",
     )
 
     with pytest.raises(

@@ -1,16 +1,21 @@
-import csv
 import re
 from decimal import Decimal
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from income_book_automation.models import BankName, BankTransaction
+from income_book_automation.iban import (
+    InvalidUkrainianIbanError,
+    normalize_ukrainian_iban,
+)
+from income_book_automation.models import BankName, BankTransaction, TransactionSource
 from income_book_automation.parsers.common import (
     open_bank_csv,
     parse_decimal_value,
     parse_dotted_date,
-    validate_required_headers,
+    parse_ukrainian_iban,
+    read_strict_csv_rows,
+    require_non_blank_value,
 )
 from income_book_automation.parsers.errors import (
     BankStatementFormatError,
@@ -43,10 +48,14 @@ def parse_abank_metadata(metadata: str, path: Path) -> tuple[str, str]:
             "is missing from the metadata row"
         )
 
-    return (
-        match.group("account_number").upper(),
-        match.group("currency").upper(),
-    )
+    try:
+        account_number = normalize_ukrainian_iban(match.group("account_number"))
+    except InvalidUkrainianIbanError as error:
+        raise BankStatementFormatError(
+            f"File '{path.name}': statement metadata contains an invalid Ukrainian IBAN"
+        ) from error
+
+    return account_number, match.group("currency").upper()
 
 
 def parse_abank_row(
@@ -64,7 +73,12 @@ def parse_abank_row(
         "Сума, грн",
     )
 
-    direction = row["Тип операції"].strip()
+    direction = require_non_blank_value(
+        row["Тип операції"],
+        path,
+        row_number,
+        "Тип операції",
+    )
     if direction == "Вхідна":
         if signed_amount <= 0:
             raise InvalidBankRowError(
@@ -99,6 +113,10 @@ def parse_abank_row(
 
     try:
         return BankTransaction(
+            source=TransactionSource(
+                original_filename=path.name,
+                row_number=row_number,
+            ),
             date=transaction_date,
             bank=BankName.ABANK,
             account_number=account_number,
@@ -107,7 +125,13 @@ def parse_abank_row(
             debit=debit,
             credit=credit,
             counterparty=row["Контрагент"].strip(),
-            counterparty_account=row["IBAN Контрагента"].strip(),
+            counterparty_account=parse_ukrainian_iban(
+                row["IBAN Контрагента"],
+                path,
+                row_number,
+                "IBAN Контрагента",
+                required=False,
+            ),
             payment_purpose=row["Призначення платежу"].strip(),
             counterparty_tax_id=counterparty_tax_id,
         )
@@ -128,11 +152,13 @@ def parse_abank_file(path: Path) -> list[BankTransaction]:
 
         account_number, currency = parse_abank_metadata(metadata, path)
 
-        reader = csv.DictReader(file, delimiter=",")
-        validate_required_headers(
-            reader.fieldnames,
-            ABANK_REQUIRED_HEADERS,
-            path,
+        rows = read_strict_csv_rows(
+            file,
+            path=path,
+            bank_name="A-Bank",
+            delimiter=",",
+            required_headers=ABANK_REQUIRED_HEADERS,
+            header_row_number=2,
         )
 
         return [
@@ -143,5 +169,5 @@ def parse_abank_file(path: Path) -> list[BankTransaction]:
                 account_number=account_number,
                 currency=currency,
             )
-            for row_number, row in enumerate(reader, start=3)
+            for row_number, row in rows
         ]
