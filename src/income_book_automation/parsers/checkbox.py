@@ -28,6 +28,29 @@ class CheckboxFormatError(CheckboxParseError):
 class MissingCheckboxColumnError(CheckboxFormatError):
     """Raised when a required Checkbox column is missing."""
 
+    def __init__(
+        self,
+        filename: str,
+        missing_headers: tuple[str, ...],
+    ) -> None:
+        self.filename = filename
+        self.missing_headers = missing_headers
+
+        columns = ", ".join(f"«{header}»" for header in missing_headers)
+
+        if len(missing_headers) == 1:
+            message = (
+                f"У Z-звіті Checkbox «{filename}» відсутня обов’язкова "
+                f"колонка: {columns}. Книгу доходів не сформовано."
+            )
+        else:
+            message = (
+                f"У Z-звіті Checkbox «{filename}» відсутні обов’язкові "
+                f"колонки: {columns}. Книгу доходів не сформовано."
+            )
+
+        super().__init__(message)
+
 
 class InvalidCheckboxRowError(CheckboxParseError):
     """Raised when a checkbox workbook has a different value."""
@@ -62,13 +85,16 @@ def resolve_column_headers(
         indexes[field_name] = available_headers[normalized_header]
 
     if missing_headers:
-        missing = ", ".join(f"'{header}'" for header in missing_headers)
         raise MissingCheckboxColumnError(
-            f"File '{path.name}', row 1: required columns are missing: "
-            f"{missing}. Original value: None"
+            path.name,
+            tuple(missing_headers),
         )
 
     return indexes
+
+
+def is_blank_value(value: object) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
 
 
 def parse_checkbox_row(
@@ -78,6 +104,12 @@ def parse_checkbox_row(
     row_number: int,
 ) -> DailyCheckboxRevenue:
     opened_at = row[column_indexes["opened_at"]]
+    if is_blank_value(opened_at):
+        raise InvalidCheckboxRowError(
+            f"File '{path.name}', row {row_number}, "
+            f"column '{REQUIRED_HEADERS['opened_at']}': "
+            "required value is missing"
+        )
     try:
         opened_date = opened_at.date()
     except AttributeError as error:
@@ -136,8 +168,14 @@ def parse_checkbox_row(
 def parse_decimal_value(
     value: object, path: Path, row_number: int, column_name: str
 ) -> Decimal:
+    if is_blank_value(value):
+        raise InvalidCheckboxRowError(
+            f"File '{path.name}', row {row_number}, "
+            f"column '{column_name}': required value is missing"
+        )
+
     try:
-        return Decimal(str(value or 0))
+        return Decimal(str(value).strip())
     except InvalidOperation as error:
         raise InvalidCheckboxRowError(
             f"File '{path.name}', row {row_number}, "
@@ -146,9 +184,42 @@ def parse_decimal_value(
         ) from error
 
 
+def validate_formula_results(
+    value_row: tuple[object, ...],
+    formula_row: tuple[object, ...],
+    column_indexes: dict[str, int],
+    path: Path,
+    row_number: int,
+) -> None:
+    for field_name, column_index in column_indexes.items():
+        formula_cell = formula_row[column_index]
+        calculated_value = value_row[column_index]
+
+        if getattr(formula_cell, "data_type", None) == "f" and is_blank_value(
+            calculated_value
+        ):
+            raise InvalidCheckboxRowError(
+                f"File '{path.name}', row {row_number}, "
+                f"column '{REQUIRED_HEADERS[field_name]}': "
+                "formula has no cached result"
+            )
+
+
 def parse_checkbox_file(path: Path) -> list[DailyCheckboxRevenue]:
     try:
         workbook = load_workbook(path, read_only=True, data_only=True)
+        try:
+            formula_workbook = load_workbook(
+                path,
+                read_only=True,
+                data_only=False,
+            )
+        except Exception as error:
+            workbook.close()
+
+            raise CheckboxParseError(
+                f"Can't read Checkbox formulas from file: '{path.name}'."
+            ) from error
     except Exception as error:
         raise CheckboxParseError(
             f"Can't read Checkbox file: '{path.name}' the file is corrupted or has an invalid format."
@@ -158,7 +229,11 @@ def parse_checkbox_file(path: Path) -> list[DailyCheckboxRevenue]:
         worksheet = workbook.active
         rows = worksheet.iter_rows(values_only=True)
 
+        formula_worksheet = formula_workbook.active
+        formula_rows = formula_worksheet.iter_rows(values_only=False)
+
         header_row = next(rows, None)
+        next(formula_rows, None)
 
         if header_row is None:
             raise CheckboxFormatError("Checkbox workbook is empty.")
@@ -167,16 +242,35 @@ def parse_checkbox_file(path: Path) -> list[DailyCheckboxRevenue]:
 
         records: list[DailyCheckboxRevenue] = []
 
-        for row_number, row in enumerate(rows, start=2):
-            opened_at = row[column_indexes["opened_at"]]
+        required_indexes = tuple(column_indexes.values())
 
-            if opened_at is None:
+        for row_number, (row, formula_row) in enumerate(
+            zip(rows, formula_rows, strict=True),
+            start=2,
+        ):
+            validate_formula_results(
+                row,
+                formula_row,
+                column_indexes,
+                path,
+                row_number,
+            )
+
+            required_values = tuple(row[index] for index in required_indexes)
+
+            if all(is_blank_value(value) for value in required_values):
                 continue
 
-            record = parse_checkbox_row(row, column_indexes, path, row_number)
+            record = parse_checkbox_row(
+                row,
+                column_indexes,
+                path,
+                row_number,
+            )
             records.append(record)
 
         return records
 
     finally:
         workbook.close()
+        formula_workbook.close()

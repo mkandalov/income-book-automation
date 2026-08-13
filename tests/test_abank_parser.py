@@ -14,12 +14,14 @@ from income_book_automation.parsers.abank import (
 from income_book_automation.parsers.errors import (
     BankStatementFormatError,
     BankStatementReadError,
+    EmptyBankStatementError,
     InvalidBankRowError,
+    InvalidBankRowStructureError,
     MissingBankColumnError,
 )
 
-TEST_ACCOUNT = "UA000000000000000000000000001"
-TEST_COUNTERPARTY_ACCOUNT = "UA000000000000000000000000002"
+TEST_ACCOUNT = "UA273000010000000000000000001"
+TEST_COUNTERPARTY_ACCOUNT = "UA973000010000000000000000002"
 TEST_METADATA = (
     "Виписка за рахунком ФОП ТЕСТОВИЙ ТАРАС ІВАНОВИЧ "
     f"{TEST_ACCOUNT} UAH за період з 01.07.2026-31.07.2026"
@@ -63,6 +65,19 @@ def test_parse_abank_metadata_extracts_account_and_currency() -> None:
     assert currency == "UAH"
 
 
+def test_parse_abank_metadata_rejects_invalid_statement_iban() -> None:
+    metadata = TEST_METADATA.replace(
+        TEST_ACCOUNT,
+        "UA003000010000000000000000001",
+    )
+
+    with pytest.raises(
+        BankStatementFormatError,
+        match="metadata contains an invalid Ukrainian IBAN",
+    ):
+        parse_abank_metadata(metadata, Path("synthetic-abank.csv"))
+
+
 def test_parse_abank_row_maps_incoming_transaction() -> None:
     transaction = parse_abank_row(
         _abank_row(),
@@ -83,6 +98,8 @@ def test_parse_abank_row_maps_incoming_transaction() -> None:
     assert transaction.counterparty_account == TEST_COUNTERPARTY_ACCOUNT
     assert transaction.payment_purpose == "Оплата за тестові послуги"
     assert transaction.counterparty_tax_id == "0000000000"
+    assert transaction.source.original_filename == "synthetic-abank.csv"
+    assert transaction.source.row_number == 3
 
 
 def test_parse_abank_row_maps_outgoing_transaction() -> None:
@@ -115,6 +132,23 @@ def test_parse_abank_row_converts_empty_tax_id_to_none() -> None:
     )
 
     assert transaction.counterparty_tax_id is None
+
+
+def test_parse_abank_row_rejects_missing_direction() -> None:
+    row = _abank_row()
+    row["Тип операції"] = "   "
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match="column 'Тип операції': required value is missing",
+    ):
+        parse_abank_row(
+            row,
+            Path("synthetic-abank.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+            currency="UAH",
+        )
 
 
 def test_parse_abank_file_skips_metadata_and_reads_rows(tmp_path: Path) -> None:
@@ -150,6 +184,61 @@ def test_parse_abank_file_rejects_missing_required_header(
         writer.writerow(row)
 
     with pytest.raises(MissingBankColumnError, match="Сума, грн"):
+        parse_abank_file(source_path)
+
+
+@pytest.mark.parametrize(
+    ("extra_values", "actual_column_count"),
+    [
+        (-1, 9),
+        (1, 11),
+    ],
+)
+def test_parse_abank_file_rejects_wrong_row_width(
+    tmp_path: Path,
+    extra_values: int,
+    actual_column_count: int,
+) -> None:
+    row = _abank_row()
+    values = list(row.values())
+
+    if extra_values < 0:
+        values = values[:extra_values]
+    else:
+        values.extend(["UNEXPECTED"] * extra_values)
+
+    source_path = tmp_path / "damaged-abank.csv"
+    with source_path.open("w", encoding="utf-8-sig", newline="") as file:
+        file.write(f"{TEST_METADATA}\n")
+        writer = csv.writer(file, delimiter=",")
+        writer.writerow(row.keys())
+        writer.writerow(values)
+
+    with pytest.raises(
+        InvalidBankRowStructureError,
+        match=(
+            "File 'damaged-abank.csv', bank 'A-Bank', row 3: "
+            f"expected 10 columns, got {actual_column_count}"
+        ),
+    ):
+        parse_abank_file(source_path)
+
+
+def test_parse_abank_file_rejects_header_without_transactions(
+    tmp_path: Path,
+) -> None:
+    row = _abank_row()
+    source_path = tmp_path / "header-only-abank.csv"
+
+    with source_path.open("w", encoding="utf-8-sig", newline="") as file:
+        file.write(f"{TEST_METADATA}\n")
+        writer = csv.writer(file, delimiter=",")
+        writer.writerow(row.keys())
+
+    with pytest.raises(
+        EmptyBankStatementError,
+        match="statement contains no transaction rows",
+    ):
         parse_abank_file(source_path)
 
 
@@ -226,3 +315,20 @@ def test_parse_abank_file_wraps_missing_file(tmp_path: Path) -> None:
 
     with pytest.raises(BankStatementReadError, match="missing-abank.csv"):
         parse_abank_file(source_path)
+
+
+def test_parse_abank_row_rejects_invalid_counterparty_iban() -> None:
+    row = _abank_row()
+    row["IBAN Контрагента"] = "UA003000010000000000000000001"
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match="IBAN Контрагента': invalid Ukrainian IBAN",
+    ):
+        parse_abank_row(
+            row,
+            Path("synthetic-abank.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+            currency="UAH",
+        )

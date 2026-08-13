@@ -1,4 +1,5 @@
 import csv
+import re
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -8,12 +9,14 @@ import pytest
 from income_book_automation.models import BankName
 from income_book_automation.parsers.errors import (
     BankStatementReadError,
+    EmptyBankStatementError,
     InvalidBankRowError,
+    InvalidBankRowStructureError,
     MissingBankColumnError,
 )
 from income_book_automation.parsers.mono import parse_mono_file, parse_mono_row
 
-TEST_ACCOUNT = "UA000000000000000000000000001"
+TEST_ACCOUNT = "UA273000010000000000000000001"
 
 
 def _mono_row() -> dict[str, str]:
@@ -24,7 +27,7 @@ def _mono_row() -> dict[str, str]:
         "Деталі операції": "Оплата за тестові послуги",
         "Контрагент": "ТОВ Тестовий клієнт",
         "ЄДРПОУ контрагента": "0000000000",
-        "IBAN контрагента": "UA000000000000000000000000002",
+        "IBAN контрагента": "UA973000010000000000000000002",
         "Сума в валюті рахунку": "100.00",
         "Сума в валюті операції": "100.00",
         "Валюта операції": "UAH",
@@ -53,8 +56,79 @@ def test_parse_mono_row_maps_credit_transaction() -> None:
     assert transaction.debit == Decimal("0.00")
     assert transaction.credit == Decimal("100.00")
     assert transaction.counterparty == "ТОВ Тестовий клієнт"
-    assert transaction.counterparty_account == "UA000000000000000000000000002"
+    assert transaction.counterparty_account == "UA973000010000000000000000002"
     assert transaction.counterparty_tax_id == "0000000000"
+    assert transaction.source.original_filename == "synthetic-mono.csv"
+    assert transaction.source.row_number == 2
+
+
+@pytest.mark.parametrize(
+    ("column_name", "overrides"),
+    [
+        ("Валюта операції", {"Валюта операції": "   "}),
+        (
+            "Вид операції (дебет/кредит)",
+            {"Вид операції (дебет/кредит)": ""},
+        ),
+    ],
+)
+def test_parse_mono_row_rejects_missing_technical_value(
+    column_name: str,
+    overrides: dict[str, str],
+) -> None:
+    row = _mono_row()
+    row.update(overrides)
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match=rf"column '{re.escape(column_name)}': required value is missing",
+    ):
+        parse_mono_row(
+            row,
+            Path("synthetic-mono.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+        )
+
+
+def test_parse_mono_row_rejects_missing_statement_account() -> None:
+    with pytest.raises(
+        InvalidBankRowError,
+        match="column 'statement account': required value is missing",
+    ):
+        parse_mono_row(
+            _mono_row(),
+            Path("synthetic-mono.csv"),
+            7,
+            account_number="   ",
+        )
+
+
+@pytest.mark.parametrize(
+    ("direction", "amount", "message"),
+    [
+        ("Кредит", "-10.00", "credit transaction amount must be positive"),
+        ("Дебет", "10.00", "debit transaction amount must be negative"),
+        ("Кредит", "0.00", "credit transaction amount must be positive"),
+        ("Дебет", "0.00", "debit transaction amount must be negative"),
+    ],
+)
+def test_parse_mono_row_rejects_inconsistent_amount_sign(
+    direction: str,
+    amount: str,
+    message: str,
+) -> None:
+    row = _mono_row()
+    row["Вид операції (дебет/кредит)"] = direction
+    row["Сума в валюті рахунку"] = amount
+
+    with pytest.raises(InvalidBankRowError, match=message):
+        parse_mono_row(
+            row,
+            Path("synthetic-mono.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+        )
 
 
 def test_parse_mono_file_normalizes_headers_and_direction(tmp_path: Path) -> None:
@@ -106,6 +180,59 @@ def test_parse_mono_file_rejects_missing_required_header(
         parse_mono_file(source_path, account_number=TEST_ACCOUNT)
 
 
+@pytest.mark.parametrize(
+    ("extra_values", "actual_column_count"),
+    [
+        (-1, 16),
+        (1, 18),
+    ],
+)
+def test_parse_mono_file_rejects_wrong_row_width(
+    tmp_path: Path,
+    extra_values: int,
+    actual_column_count: int,
+) -> None:
+    row = _mono_row()
+    values = list(row.values())
+
+    if extra_values < 0:
+        values = values[:extra_values]
+    else:
+        values.extend(["UNEXPECTED"] * extra_values)
+
+    source_path = tmp_path / "damaged-mono.csv"
+    with source_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter=";")
+        writer.writerow(row.keys())
+        writer.writerow(values)
+
+    with pytest.raises(
+        InvalidBankRowStructureError,
+        match=(
+            "File 'damaged-mono.csv', bank 'Monobank', row 2: "
+            f"expected 17 columns, got {actual_column_count}"
+        ),
+    ):
+        parse_mono_file(source_path, account_number=TEST_ACCOUNT)
+
+
+def test_parse_mono_file_rejects_header_without_transactions(
+    tmp_path: Path,
+) -> None:
+    row = _mono_row()
+    source_path = tmp_path / "header-only-mono.csv"
+
+    with source_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter=";")
+        writer.writerow(row.keys())
+
+    with pytest.raises(
+        EmptyBankStatementError,
+        match="statement contains no transaction rows",
+    ):
+        parse_mono_file(source_path, account_number=TEST_ACCOUNT)
+
+
 def test_parse_mono_row_wraps_unknown_direction() -> None:
     row = _mono_row()
     row["Вид операції (дебет/кредит)"] = "Unknown"
@@ -130,3 +257,32 @@ def test_parse_mono_file_wraps_missing_file(tmp_path: Path) -> None:
 
     with pytest.raises(BankStatementReadError, match="missing-mono.csv"):
         parse_mono_file(source_path, account_number=TEST_ACCOUNT)
+
+
+def test_parse_mono_row_rejects_invalid_statement_iban() -> None:
+    with pytest.raises(
+        InvalidBankRowError,
+        match="column 'statement account': invalid Ukrainian IBAN",
+    ):
+        parse_mono_row(
+            _mono_row(),
+            Path("synthetic-mono.csv"),
+            7,
+            account_number="UA003000010000000000000000001",
+        )
+
+
+def test_parse_mono_row_rejects_invalid_counterparty_iban() -> None:
+    row = _mono_row()
+    row["IBAN контрагента"] = "UA003000010000000000000000001"
+
+    with pytest.raises(
+        InvalidBankRowError,
+        match="IBAN контрагента': invalid Ukrainian IBAN",
+    ):
+        parse_mono_row(
+            row,
+            Path("synthetic-mono.csv"),
+            7,
+            account_number=TEST_ACCOUNT,
+        )

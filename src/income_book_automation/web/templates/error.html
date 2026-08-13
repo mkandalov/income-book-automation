@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <section class="error-card">
+        <span class="error-card__label">Помилка обробки</span>
+
+        <h1>Не вдалося сформувати книгу доходів</h1>
+
+        <p class="error-card__description">
+            Перевірте вказаний нижче файл або поле та спробуйте ще раз.
+        </p>
+
+        <p class="error-message">
+            <strong>{{ error_message }}</strong>
+        </p>
+
+        <a class="back-link" href="/">
+            Повернутися до форми
+        </a>
+    </section>
+{% endblock %}

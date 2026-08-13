@@ -1,11 +1,15 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from income_book_automation.models import (
     BankName,
     BankTransaction,
     ClientProfile,
+    ReviewField,
     TransactionCategory,
+    TransactionSource,
 )
 from income_book_automation.rules.bank_rules import classify_bank_transaction
 
@@ -15,22 +19,26 @@ def _client_profile() -> ClientProfile:
         client_id="client-001",
         legal_name="ФОП Тестовий Тарас Іванович",
         tax_id="1111111111",
-        own_accounts={"UA000000000000000000000000001"},
+        own_accounts={"UA273000010000000000000000001"},
         name_aliases={"Тестовий Тарас Іванович"},
     )
 
 
 def _credit_transaction(**overrides: object) -> BankTransaction:
     fields: dict[str, object] = {
+        "source": TransactionSource(
+            original_filename="synthetic-pumb.csv",
+            row_number=2,
+        ),
         "date": date(2026, 1, 15),
         "bank": BankName.PUMB,
-        "account_number": "UA000000000000000000000000009",
+        "account_number": "UA053000010000000000000000009",
         "currency": "UAH",
         "document_number": "TEST-001",
         "debit": Decimal("0.00"),
         "credit": Decimal("100.00"),
         "counterparty": "ТОВ Тестовий покупець",
-        "counterparty_account": "UA000000000000000000000000002",
+        "counterparty_account": "UA973000010000000000000000002",
         "payment_purpose": "Оплата за тестові послуги",
         "counterparty_tax_id": "2222222222",
     }
@@ -52,7 +60,8 @@ def test_classifies_debit_as_excluded() -> None:
 
 def test_classifies_known_own_account_as_own_transfer() -> None:
     transaction = _credit_transaction(
-        counterparty_account=" ua000000000000000000000000001 ",
+        counterparty_account=" ua273000010000000000000000001 ",
+        counterparty_tax_id="1111111111",
     )
 
     result = classify_bank_transaction(transaction, _client_profile())
@@ -70,15 +79,67 @@ def test_classifies_matching_tax_id_as_own_transfer() -> None:
     assert result.reason == "counterparty tax ID belongs to client"
 
 
-def test_classifies_matching_name_alias_as_own_transfer() -> None:
+def test_matching_name_and_tax_id_uses_stronger_tax_id_match() -> None:
     transaction = _credit_transaction(
         counterparty="  ТЕСТОВИЙ   ТАРАС ІВАНОВИЧ  ",
+        counterparty_tax_id="1111111111",
     )
 
     result = classify_bank_transaction(transaction, _client_profile())
 
     assert result.category is TransactionCategory.OWN_TRANSFER
-    assert result.reason == "counterparty name belongs to client"
+    assert result.reason == "counterparty tax ID belongs to client"
+
+
+def test_sends_known_own_account_with_foreign_tax_id_to_review() -> None:
+    transaction = _credit_transaction(
+        counterparty_account="UA273000010000000000000000001",
+        counterparty_tax_id="2222222222",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.NEEDS_REVIEW
+    assert result.reason == "counterparty identity conflicts with client profile"
+    assert result.missing_fields == frozenset()
+
+
+def test_sends_matching_name_with_foreign_tax_id_to_review() -> None:
+    transaction = _credit_transaction(
+        counterparty="Тестовий Тарас Іванович",
+        counterparty_tax_id="2222222222",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.NEEDS_REVIEW
+    assert result.reason == "counterparty identity conflicts with client profile"
+    assert result.missing_fields == frozenset()
+
+
+def test_unknown_account_does_not_conflict_with_matching_tax_id() -> None:
+    transaction = _credit_transaction(
+        counterparty_account="UA973000010000000000000000099",
+        counterparty_tax_id="1111111111",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.OWN_TRANSFER
+    assert result.reason == "counterparty tax ID belongs to client"
+
+
+def test_different_name_does_not_conflict_with_matching_own_identifiers() -> None:
+    transaction = _credit_transaction(
+        counterparty="Інший варіант назви",
+        counterparty_account="UA273000010000000000000000001",
+        counterparty_tax_id="1111111111",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.OWN_TRANSFER
+    assert result.reason == "counterparty account belongs to client"
 
 
 def test_excludes_refund_payment_purpose() -> None:
@@ -124,8 +185,32 @@ def test_classifies_regular_credit_as_income() -> None:
     assert result.reason == "eligible incoming payment"
 
 
-def test_sends_incomplete_credit_to_manual_review() -> None:
+@pytest.mark.parametrize(
+    ("overrides", "expected_missing_field"),
+    [
+        ({"document_number": "   "}, ReviewField.DOCUMENT_NUMBER),
+        ({"counterparty": "   "}, ReviewField.COUNTERPARTY),
+        ({"counterparty_account": ""}, ReviewField.COUNTERPARTY_ACCOUNT),
+        ({"counterparty_tax_id": None}, ReviewField.COUNTERPARTY_TAX_ID),
+        ({"payment_purpose": "\t"}, ReviewField.PAYMENT_PURPOSE),
+    ],
+)
+def test_sends_credit_with_each_missing_field_to_manual_review(
+    overrides: dict[str, object],
+    expected_missing_field: ReviewField,
+) -> None:
+    transaction = _credit_transaction(**overrides)
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.NEEDS_REVIEW
+    assert result.reason == "required review fields are missing"
+    assert result.missing_fields == frozenset({expected_missing_field})
+
+
+def test_manual_review_records_all_missing_fields() -> None:
     transaction = _credit_transaction(
+        document_number="",
         counterparty="",
         counterparty_account="",
         counterparty_tax_id=None,
@@ -135,4 +220,34 @@ def test_sends_incomplete_credit_to_manual_review() -> None:
     result = classify_bank_transaction(transaction, _client_profile())
 
     assert result.category is TransactionCategory.NEEDS_REVIEW
-    assert result.reason == "insufficient counterparty information"
+    assert result.missing_fields == frozenset(ReviewField)
+
+
+def test_missing_fields_take_priority_for_incoming_own_transfer() -> None:
+    transaction = _credit_transaction(
+        counterparty_account="UA273000010000000000000000001",
+        payment_purpose="",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.NEEDS_REVIEW
+    assert result.missing_fields == frozenset({ReviewField.PAYMENT_PURPOSE})
+
+
+def test_missing_review_fields_do_not_block_debit_exclusion() -> None:
+    transaction = _credit_transaction(
+        document_number="",
+        debit=Decimal("100.00"),
+        credit=Decimal("0.00"),
+        counterparty="",
+        counterparty_account="",
+        counterparty_tax_id=None,
+        payment_purpose="",
+    )
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.EXCLUDED
+    assert result.reason == "debit transaction"
+    assert result.missing_fields == frozenset()

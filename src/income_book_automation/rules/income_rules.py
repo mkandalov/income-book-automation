@@ -4,6 +4,8 @@ from datetime import date
 from decimal import Decimal
 
 from income_book_automation.models import (
+    CheckboxPaymentMethod,
+    CheckboxRefundWarning,
     ClassifiedTransaction,
     DailyBankIncome,
     DailyCheckboxRevenue,
@@ -29,6 +31,35 @@ def aggregate_checkbox_by_date(
             existing_record.cash_refund += record.cash_refund
 
     return sorted(records_by_date.values(), key=lambda record: record.date)
+
+
+def find_checkbox_refund_warnings(
+    records: list[DailyCheckboxRevenue],
+) -> list[CheckboxRefundWarning]:
+    warnings: list[CheckboxRefundWarning] = []
+
+    for record in records:
+        if record.card_net < 0:
+            warnings.append(
+                CheckboxRefundWarning(
+                    date=record.date,
+                    payment_method=CheckboxPaymentMethod.CARD,
+                    revenue=record.card_revenue,
+                    refund=record.card_refund,
+                )
+            )
+
+        if record.cash_net < 0:
+            warnings.append(
+                CheckboxRefundWarning(
+                    date=record.date,
+                    payment_method=CheckboxPaymentMethod.CASH,
+                    revenue=record.cash_revenue,
+                    refund=record.cash_refund,
+                )
+            )
+
+    return warnings
 
 
 def aggregate_bank_income_by_date(

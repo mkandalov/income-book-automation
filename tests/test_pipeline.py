@@ -6,21 +6,37 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook, load_workbook
 
+from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.models import (
     BankName,
     BankTransaction,
+    CheckboxPaymentMethod,
     ClientProfile,
+    ReviewField,
     TransactionCategory,
+    TransactionSource,
 )
+from income_book_automation.parsers.checkbox import (
+    MissingCheckboxColumnError,
+)
+from income_book_automation.parsers.errors import BankStatementFormatError
 from income_book_automation.pipeline import (
     BankStatementSource,
     IncomeBookPipelineError,
     MissingStatementAccountError,
+    MixedPeriodError,
+    UnresolvedTransactionsError,
+    UnsupportedCurrencyError,
     run_income_book_pipeline,
 )
 
 
-def _write_pumb_statement(path: Path) -> None:
+def _write_pumb_statement(
+    path: Path,
+    *,
+    include_incomplete_transaction: bool = False,
+    first_payment_purpose: str = "Оплата за тестові послуги",
+) -> None:
     rows = [
         [
             "ST_DATE",
@@ -36,41 +52,45 @@ def _write_pumb_statement(path: Path) -> None:
         ],
         [
             "2026.06.01",
-            "UA000000000000000000000000001",
+            "UA273000010000000000000000001",
             "980",
             "TEST-001",
             "0",
             "20.00",
             "ТОВ Тестовий покупець",
-            "UA000000000000000000000000010",
+            "UA753000010000000000000000010",
             "11111111",
-            "Оплата за тестові послуги",
+            first_payment_purpose,
         ],
         [
             "2026.06.01",
-            "UA000000000000000000000000001",
+            "UA273000010000000000000000001",
             "980",
             "TEST-002",
             "0",
             "30.00",
             "ФОП Тестовий Тарас Іванович",
-            "UA000000000000000000000000002",
+            "UA973000010000000000000000002",
             "0000000000",
             "Переказ між власними рахунками",
         ],
-        [
-            "2026.06.01",
-            "UA000000000000000000000000001",
-            "980",
-            "TEST-003",
-            "0",
-            "40.00",
-            "",
-            "",
-            "",
-            "",
-        ],
     ]
+
+    if include_incomplete_transaction:
+        rows.append(
+            [
+                "2026.06.01",
+                "UA273000010000000000000000001",
+                "980",
+                "TEST-003",
+                "0",
+                "40.00",
+                "",
+                "",
+                "",
+                "",
+            ]
+        )
 
     with path.open("w", encoding="cp1251", newline="") as file:
         writer = csv.writer(file, delimiter=";")
@@ -98,25 +118,25 @@ def _write_overlapping_pumb_statement(
         ],
         [
             "2026.06.01",
-            "UA000000000000000000000000001",
+            "UA273000010000000000000000001",
             "980",
             "TEST-DUPLICATE-001",
             "0",
             "20.00",
             "ТОВ Тестовий покупець",
-            "UA000000000000000000000000010",
+            "UA753000010000000000000000010",
             "11111111",
             "Оплата за тестові послуги",
         ],
         [
             "2026.06.01",
-            "UA000000000000000000000000001",
+            "UA273000010000000000000000001",
             "980",
             unique_document_number,
             "0",
             unique_amount,
             "ТОВ Інший тестовий покупець",
-            "UA000000000000000000000000011",
+            "UA483000010000000000000000011",
             "22222222",
             "Інша тестова оплата",
         ],
@@ -148,7 +168,7 @@ def _write_abank_statement(path: Path) -> None:
             "Вхідна",
             "ТОВ Тестовий покупець",
             "11111111",
-            "UA000000000000000000000000010",
+            "UA753000010000000000000000010",
             "Оплата за тестові послуги",
             "20,00",
             "20,00",
@@ -158,14 +178,21 @@ def _write_abank_statement(path: Path) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as file:
         file.write(
             "Виписка за рахунком ФОП ТЕСТОВИЙ ТАРАС ІВАНОВИЧ "
-            "UA000000000000000000000000001 UAH "
+            "UA273000010000000000000000001 UAH "
             "за період з 01.06.2026-30.06.2026\n"
         )
         writer = csv.writer(file, delimiter=",")
         writer.writerows(rows)
 
 
-def _write_checkbox_report(path: Path) -> None:
+def _write_checkbox_report(
+    path: Path,
+    *,
+    card_revenue: int = 100,
+    card_refund: int = 10,
+    cash_revenue: int = 50,
+    cash_refund: int = 0,
+) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.append(
@@ -181,10 +208,10 @@ def _write_checkbox_report(path: Path) -> None:
         [
             # Excel stores timestamps without timezone information.
             datetime(2026, 6, 1, 12, 0),  # noqa: DTZ001
-            100,
-            10,
-            50,
-            0,
+            card_revenue,
+            card_refund,
+            cash_revenue,
+            cash_refund,
         ]
     )
     workbook.save(path)
@@ -207,8 +234,8 @@ def _client_profile() -> ClientProfile:
         legal_name="ФОП Тестовий Тарас Іванович",
         tax_id="0000000000",
         own_accounts={
-            "UA000000000000000000000000001",
-            "UA000000000000000000000000002",
+            "UA273000010000000000000000001",
+            "UA973000010000000000000000002",
         },
     )
 
@@ -233,6 +260,12 @@ def test_run_income_book_pipeline_processes_sources_and_exports_workbook(
         template_path=template_path,
         output_path=output_path,
         sheet_name="2026",
+        helper_columns=HelperColumnMapping(
+            total=10,
+            checkbox_card=12,
+            checkbox_cash=13,
+            bank_income=14,
+        ),
     )
 
     assert result.output_path == output_path
@@ -245,19 +278,172 @@ def test_run_income_book_pipeline_processes_sources_and_exports_workbook(
     assert [record.category for record in result.classified_transactions] == [
         TransactionCategory.INCOME,
         TransactionCategory.OWN_TRANSFER,
-        TransactionCategory.NEEDS_REVIEW,
     ]
-    assert result.needs_review == (result.classified_transactions[2],)
+    assert result.needs_review == ()
 
     workbook = load_workbook(output_path, data_only=False)
     try:
         sheet = workbook["2026"]
         assert sheet["B6"].value == 160
-        assert sheet["K6"].value == 90
-        assert sheet["L6"].value == 50
+        assert sheet["J6"].value == "=L6+M6+N6"
+        assert sheet["K6"].value is None
+        assert sheet["L6"].value == 90
+        assert sheet["M6"].value == 50
+        assert sheet["N6"].value == 20
+    finally:
+        workbook.close()
+
+
+def test_pipeline_blocks_export_when_transaction_needs_review(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "statement-with-missing-fields.csv"
+    checkbox_path = tmp_path / "checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(
+        statement_path,
+        include_incomplete_transaction=True,
+    )
+    _write_checkbox_report(checkbox_path)
+    _write_income_book_template(template_path)
+
+    with pytest.raises(UnresolvedTransactionsError) as error_info:
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=checkbox_path,
+            template_path=template_path,
+            output_path=output_path,
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+    review_records = error_info.value.records
+    assert len(review_records) == 1
+
+    review_record = review_records[0]
+    assert review_record.category is TransactionCategory.NEEDS_REVIEW
+    assert review_record.transaction.source.original_filename == (
+        "statement-with-missing-fields.csv"
+    )
+    assert review_record.transaction.source.row_number == 4
+    assert review_record.missing_fields == frozenset(
+        {
+            ReviewField.COUNTERPARTY,
+            ReviewField.COUNTERPARTY_ACCOUNT,
+            ReviewField.COUNTERPARTY_TAX_ID,
+            ReviewField.PAYMENT_PURPOSE,
+        }
+    )
+
+
+def test_pipeline_exports_negative_checkbox_results_with_warnings(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "statement.csv"
+    checkbox_path = tmp_path / "checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(statement_path)
+    _write_checkbox_report(
+        checkbox_path,
+        card_revenue=10,
+        card_refund=25,
+        cash_revenue=5,
+        cash_refund=10,
+    )
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank=BankName.PUMB,
+        bank_statement_path=statement_path,
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert output_path.exists()
+    assert result.daily_entries[0].checkbox_card_income == Decimal("-15.00")
+    assert result.daily_entries[0].checkbox_cash_income == Decimal("-5.00")
+    assert len(result.checkbox_warnings) == 2
+
+    card_warning, cash_warning = result.checkbox_warnings
+    assert card_warning.payment_method is CheckboxPaymentMethod.CARD
+    assert card_warning.result == Decimal("-15.00")
+    assert cash_warning.payment_method is CheckboxPaymentMethod.CASH
+    assert cash_warning.result == Decimal("-5.00")
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        assert sheet["B6"].value == 0
+        assert sheet["J6"].value == "=K6+L6+M6"
+        assert sheet["K6"].value == -15
+        assert sheet["L6"].value == -5
         assert sheet["M6"].value == 20
     finally:
         workbook.close()
+
+
+def test_pipeline_names_original_bank_file_and_selected_bank(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "uploaded-privat.csv"
+    statement_path.write_text("not a PUMB statement", encoding="utf-8")
+
+    with pytest.raises(
+        BankStatementFormatError,
+        match="uploaded-privat.csv.*ПУМБ",
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=tmp_path / "ZReport.xlsx",
+            template_path=tmp_path / "income-book.xlsx",
+            output_path=tmp_path / "output.xlsx",
+            sheet_name="2026",
+        )
+
+
+def test_pipeline_identifies_wrong_checkbox_z_report(tmp_path: Path) -> None:
+    statement_path = tmp_path / "bank.csv"
+    checkbox_path = tmp_path / "wrong-checkbox-report.xlsx"
+
+    _write_pumb_statement(statement_path)
+
+    workbook = Workbook()
+    workbook.active.append(["Це інший звіт Checkbox"])
+    workbook.save(checkbox_path)
+    workbook.close()
+
+    with pytest.raises(MissingCheckboxColumnError) as error_info:
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=checkbox_path,
+            template_path=tmp_path / "income-book.xlsx",
+            output_path=tmp_path / "output.xlsx",
+            sheet_name="2026",
+        )
+
+    assert error_info.value.filename == "wrong-checkbox-report.xlsx"
+    assert error_info.value.missing_headers == (
+        "Дата відкриття",
+        "Виручка безготівка",
+        "Повернення безготівка",
+        "Виручка готівка",
+        "Повернення готівка",
+    )
+    assert "Книгу доходів не сформовано" in str(error_info.value)
 
 
 def test_run_income_book_pipeline_requires_statement_account_for_mono(
@@ -265,7 +451,7 @@ def test_run_income_book_pipeline_requires_statement_account_for_mono(
 ) -> None:
     with pytest.raises(
         MissingStatementAccountError,
-        match="requires an account number",
+        match="Mono «statement.csv» потрібно вказати IBAN",
     ):
         run_income_book_pipeline(
             client=_client_profile(),
@@ -358,7 +544,10 @@ def test_run_income_book_pipeline_rejects_duplicate_statement_files(
     _write_pumb_statement(first_statement_path)
     renamed_copy_path.write_bytes(first_statement_path.read_bytes())
 
-    with pytest.raises(IncomeBookPipelineError, match="duplicates"):
+    with pytest.raises(
+        IncomeBookPipelineError,
+        match="renamed-copy.csv.*повторює.*first-statement.csv",
+    ):
         run_income_book_pipeline(
             client=_client_profile(),
             bank_statements=[
@@ -415,12 +604,12 @@ def test_run_income_book_pipeline_uses_each_mono_account(
             BankStatementSource(
                 bank=BankName.MONO,
                 path=first_statement_path,
-                account_number="UA000000000000000000000000101",
+                account_number="UA433000010000000000000000101",
             ),
             BankStatementSource(
                 bank=BankName.MONO,
                 path=second_statement_path,
-                account_number="UA000000000000000000000000102",
+                account_number="UA163000010000000000000000102",
             ),
         ],
         checkbox_path=checkbox_path,
@@ -433,11 +622,146 @@ def test_run_income_book_pipeline_uses_each_mono_account(
         (
             first_statement_path,
             BankName.MONO,
-            "UA000000000000000000000000101",
+            "UA433000010000000000000000101",
         ),
         (
             second_statement_path,
             BankName.MONO,
-            "UA000000000000000000000000102",
+            "UA163000010000000000000000102",
         ),
     ]
+
+
+def test_run_income_book_pipeline_rejects_non_uah_before_export(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statement_path = tmp_path / "uploaded-euro-statement.csv"
+    output_path = tmp_path / "output.xlsx"
+    statement_path.write_text("synthetic statement", encoding="utf-8")
+
+    transaction = BankTransaction(
+        source=TransactionSource(
+            original_filename="original-euro-statement.csv",
+            row_number=7,
+        ),
+        date=date(2026, 6, 1),
+        bank=BankName.PUMB,
+        account_number="UA273000010000000000000000001",
+        currency="EUR",
+        document_number="TEST-EUR-001",
+        debit=Decimal("0.00"),
+        credit=Decimal("100.00"),
+        counterparty="ТОВ Тестовий покупець",
+        counterparty_account="UA753000010000000000000000010",
+        counterparty_tax_id="11111111",
+        payment_purpose="Оплата за тестові послуги",
+    )
+
+    monkeypatch.setattr(
+        "income_book_automation.pipeline._parse_bank_statement",
+        lambda *_args, **_kwargs: [transaction],
+    )
+
+    with pytest.raises(
+        UnsupportedCurrencyError,
+        match=("original-euro-statement.csv.*рядок 7.*EUR.*лише у валюті UAH"),
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=tmp_path / "checkbox.xlsx",
+            template_path=tmp_path / "template.xlsx",
+            output_path=output_path,
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+
+def test_pipeline_rejects_bank_and_checkbox_from_different_months(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "june-bank-statement.csv"
+    checkbox_path = tmp_path / "july-checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(statement_path)
+    _write_checkbox_report(checkbox_path)
+    _write_income_book_template(template_path)
+
+    checkbox_workbook = load_workbook(checkbox_path)
+    try:
+        checkbox_workbook.active["A2"] = datetime(2026, 7, 1, 12, 0)  # noqa: DTZ001
+        checkbox_workbook.save(checkbox_path)
+    finally:
+        checkbox_workbook.close()
+
+    with pytest.raises(MixedPeriodError) as error_info:
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank=BankName.PUMB,
+            bank_statement_path=statement_path,
+            checkbox_path=checkbox_path,
+            template_path=template_path,
+            output_path=output_path,
+            sheet_name="2026",
+        )
+
+    error_message = str(error_info.value)
+    assert "june-bank-statement.csv" in error_message
+    assert "july-checkbox.xlsx" in error_message
+    assert "2026-06" in error_message
+    assert "2026-07" in error_message
+    assert "один календарний місяць" in error_message
+    assert not output_path.exists()
+
+
+def test_pipeline_exports_unchanged_book_with_no_income_warning(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "statement-without-income.csv"
+    checkbox_path = tmp_path / "zero-checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(
+        statement_path,
+        first_payment_purpose="Повернення коштів покупцю",
+    )
+    _write_checkbox_report(
+        checkbox_path,
+        card_revenue=0,
+        card_refund=0,
+        cash_revenue=0,
+        cash_refund=0,
+    )
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank=BankName.PUMB,
+        bank_statement_path=statement_path,
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert output_path.exists()
+    assert result.daily_entries == ()
+    assert result.no_income is True
+    assert [record.category for record in result.classified_transactions] == [
+        TransactionCategory.EXCLUDED,
+        TransactionCategory.OWN_TRANSFER,
+    ]
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        assert sheet["A6"].value.date() == date(2026, 6, 1)
+        assert sheet["B6"].value is None
+    finally:
+        workbook.close()

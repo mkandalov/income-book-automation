@@ -1,6 +1,7 @@
 """Exporter for the income-book Excel workbook."""
 
 from copy import copy
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -19,11 +20,9 @@ FREE_GOODS_COLUMN = 5
 TOTAL_INCOME_COLUMN = 6
 SPECIAL_INCOME_TYPE_COLUMN = 7
 SPECIAL_INCOME_AMOUNT_COLUMN = 8
+MIN_HELPER_COLUMN = 10
+MAX_HELPER_COLUMN = 15
 
-HELPER_TOTAL_COLUMN = 10
-CARD_INCOME_COLUMN = 11
-CASH_INCOME_COLUMN = 12
-BANK_INCOME_COLUMN = 13
 
 MONTH_NAMES_UKR = {
     1: "січень",
@@ -40,20 +39,20 @@ MONTH_NAMES_UKR = {
     12: "грудень",
 }
 
-TOTALLED_COLUMNS = (
+OFFICIAL_TOTALLED_COLUMNS = (
     INCOME_COLUMN,
     REFUND_COLUMN,
     FREE_GOODS_COLUMN,
     SPECIAL_INCOME_AMOUNT_COLUMN,
-    HELPER_TOTAL_COLUMN,
-    CARD_INCOME_COLUMN,
-    CASH_INCOME_COLUMN,
-    BANK_INCOME_COLUMN,
 )
 
 
 class IncomeBookExportError(Exception):
     """Base error raised while exporting an income book."""
+
+
+class InvalidHelperColumnMappingError(IncomeBookExportError):
+    """Raised when helper Excel columns are configured incorrectly."""
 
 
 class MissingIncomeBookSheetError(IncomeBookExportError):
@@ -62,6 +61,47 @@ class MissingIncomeBookSheetError(IncomeBookExportError):
 
 class MissingIncomeBookDateError(IncomeBookExportError):
     """Raised when an entry date is absent from the template."""
+
+
+@dataclass(frozen=True, slots=True)
+class HelperColumnMapping:
+    total: int = 10
+    checkbox_card: int = 11
+    checkbox_cash: int = 12
+    bank_income: int = 13
+
+    def __post_init__(self) -> None:
+        columns = (
+            self.total,
+            self.checkbox_card,
+            self.checkbox_cash,
+            self.bank_income,
+        )
+
+        if any(column < MIN_HELPER_COLUMN for column in columns):
+            raise InvalidHelperColumnMappingError(
+                "helper columns must start from column 10"
+            )
+
+        if any(column > MAX_HELPER_COLUMN for column in columns):
+            raise InvalidHelperColumnMappingError(
+                "helper columns must not exceed column 15"
+            )
+
+        if len(set(columns)) != len(columns):
+            raise InvalidHelperColumnMappingError("helper columns must be unique")
+
+
+def _totalled_columns(
+    helper_columns: HelperColumnMapping,
+) -> tuple[int, ...]:
+    return (
+        *OFFICIAL_TOTALLED_COLUMNS,
+        helper_columns.total,
+        helper_columns.checkbox_card,
+        helper_columns.checkbox_cash,
+        helper_columns.bank_income,
+    )
 
 
 def _as_date(value: object) -> date | None:
@@ -105,6 +145,7 @@ def _write_daily_entry(
     sheet: Worksheet,
     row_number: int,
     entry: DailyIncomeBookEntry,
+    helper_columns: HelperColumnMapping,
 ) -> None:
     zero = Decimal("0.00")
 
@@ -148,24 +189,32 @@ def _write_daily_entry(
         column=SPECIAL_INCOME_AMOUNT_COLUMN,
     ).value = zero
 
+    card_letter = get_column_letter(helper_columns.checkbox_card)
+    cash_letter = get_column_letter(helper_columns.checkbox_cash)
+    bank_letter = get_column_letter(helper_columns.bank_income)
+
     sheet.cell(
         row_number,
-        column=HELPER_TOTAL_COLUMN,
-    ).value = f"=K{row_number}+L{row_number}+M{row_number}"
+        column=helper_columns.total,
+    ).value = (
+        f"={card_letter}{row_number}"
+        f"+{cash_letter}{row_number}"
+        f"+{bank_letter}{row_number}"
+    )
 
     sheet.cell(
         row=row_number,
-        column=CARD_INCOME_COLUMN,
+        column=helper_columns.checkbox_card,
     ).value = entry.checkbox_card_income
 
     sheet.cell(
         row=row_number,
-        column=CASH_INCOME_COLUMN,
+        column=helper_columns.checkbox_cash,
     ).value = entry.checkbox_cash_income
 
     sheet.cell(
         row=row_number,
-        column=BANK_INCOME_COLUMN,
+        column=helper_columns.bank_income,
     ).value = entry.bank_income
 
 
@@ -259,13 +308,14 @@ def _write_month_total(
     month: int,
     first_daily_row: int,
     last_daily_row: int,
+    helper_columns: HelperColumnMapping,
 ) -> None:
     sheet.cell(
         row=row_number,
         column=DATE_COLUMN,
     ).value = f"Всього {MONTH_NAMES_UKR[month]}:"
 
-    for column in TOTALLED_COLUMNS:
+    for column in _totalled_columns(helper_columns):
         letter = get_column_letter(column)
         sheet.cell(
             row=row_number,
@@ -280,13 +330,14 @@ def _write_period_total(
     row_number: int,
     label: str,
     month_total_rows: list[int],
+    helper_columns: HelperColumnMapping,
 ) -> None:
     sheet.cell(
         row=row_number,
         column=DATE_COLUMN,
     ).value = label
 
-    for column in TOTALLED_COLUMNS:
+    for column in _totalled_columns(helper_columns):
         letter = get_column_letter(column)
         references = "+".join(f"{letter}{month_row}" for month_row in month_total_rows)
 
@@ -303,6 +354,7 @@ def _append_new_month(
     entries: list[DailyIncomeBookEntry],
     period: tuple[int, int],
     rows_by_date: dict[date, int],
+    helper_columns: HelperColumnMapping,
 ) -> None:
     year, month = period
 
@@ -337,7 +389,7 @@ def _append_new_month(
     for offset, entry in enumerate(entries):
         row_number = first_daily_row + offset
         _copy_row_style(sheet, data_style_row, row_number)
-        _write_daily_entry(sheet, row_number, entry)
+        _write_daily_entry(sheet, row_number, entry, helper_columns)
 
     last_daily_row = first_daily_row + len(entries) - 1
     month_total_row = last_daily_row + 1
@@ -353,6 +405,7 @@ def _append_new_month(
         month,
         first_daily_row,
         last_daily_row,
+        helper_columns,
     )
 
     month_total_rows[month] = month_total_row
@@ -374,6 +427,7 @@ def _append_new_month(
             next_row,
             f"Всього {quarter} кв {year}:",
             quarter_month_rows,
+            helper_columns,
         )
         next_row += 1
 
@@ -390,6 +444,7 @@ def _append_new_month(
             next_row,
             f"Всього 1 півріччя {year}:",
             half_year_rows,
+            helper_columns,
         )
 
     shifted_year_total_row = year_total_row + inserted_rows
@@ -405,6 +460,7 @@ def _append_new_month(
         shifted_year_total_row,
         f"Всього {year} рік:",
         year_month_rows,
+        helper_columns,
     )
 
 
@@ -414,17 +470,26 @@ def export_income_book(
     entries: list[DailyIncomeBookEntry],
     *,
     sheet_name: str,
+    helper_columns: HelperColumnMapping | None = None,
 ) -> Path:
+    if helper_columns is None:
+        helper_columns = HelperColumnMapping()
+
     if template_path.resolve() == output_path.resolve():
         raise IncomeBookExportError("output path must differ from template path")
 
     period = _validate_single_month(entries)
     entries = sorted(entries, key=lambda entry: entry.date)
 
-    workbook = load_workbook(
-        template_path,
-        data_only=False,
-    )
+    try:
+        workbook = load_workbook(
+            template_path,
+            data_only=False,
+        )
+    except Exception as error:
+        raise IncomeBookExportError(
+            f"can't read income-book template '{template_path.name}'"
+        ) from error
 
     try:
         if sheet_name not in workbook.sheetnames:
@@ -461,6 +526,7 @@ def export_income_book(
                     entries,
                     period,
                     rows_by_date,
+                    helper_columns,
                 )
 
             else:
@@ -473,7 +539,7 @@ def export_income_book(
         else:
             for entry in entries:
                 row_number = rows_by_date[entry.date]
-                _write_daily_entry(sheet, row_number, entry)
+                _write_daily_entry(sheet, row_number, entry, helper_columns)
 
         output_path.parent.mkdir(
             parents=True,

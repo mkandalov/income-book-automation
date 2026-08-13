@@ -1,0 +1,970 @@
+{% extends "base.html" %}
+
+{% block content %}
+    <section class="hero">
+        <p class="eyebrow">Підготовка документа</p>
+
+        <h1>Формування книги доходів</h1>
+
+        <p class="hero__lead">
+            Додайте банківські виписки, звіт Checkbox і шаблон книги.
+            Сервіс перевірить файли, об’єднає дані та підготує Excel.
+        </p>
+
+        <div class="hero__meta" aria-label="Підтримувані формати">
+            <span class="meta-pill">PUMB · Privat · Mono · А-Банк</span>
+            <span class="meta-pill">CSV + XLSX</span>
+            <span class="meta-pill">До 10 виписок</span>
+        </div>
+    </section>
+
+    <form
+        class="workflow-form"
+        id="income-book-form"
+        action="/generate"
+        method="post"
+        enctype="multipart/form-data"
+        novalidate
+    >
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">01</span>
+
+                <div>
+                    <h2>Профіль клієнта</h2>
+                    <p>Конфігурація визначає ФОП, власні рахунки та правила перевірки.</p>
+                </div>
+            </div>
+
+            <div class="field">
+                <span class="field__label">Файл конфігурації YAML</span>
+
+                <div class="file-control">
+                    <input
+                        class="upload-file-input"
+                        type="file"
+                        name="config_file"
+                        accept=".yaml,.yml"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        required
+                    >
+
+                    <button
+                        class="choose-file-button"
+                        type="button"
+                        aria-label="Обрати файл: Файл конфігурації YAML"
+                    >
+                        Обрати файл
+                    </button>
+
+                    <span class="selected-file-name" aria-live="polite">
+                        Файл не вибрано
+                    </span>
+
+                    <button
+                        class="clear-file-button"
+                        type="button"
+                        hidden
+                    >
+                        Очистити
+                    </button>
+                </div>
+
+                <span class="file-validation-message" hidden>
+                    Оберіть файл.
+                </span>
+
+                <span class="field__hint">Підтримуються файли .yaml та .yml</span>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">02</span>
+
+                <div>
+                    <h2>Банківські виписки</h2>
+                    <p>Оберіть банк для кожної виписки. IBAN потрібен лише для Mono.</p>
+                </div>
+            </div>
+
+            <div class="statements" id="bank-statements">
+                <article class="statement-card bank-statement">
+                    <div class="statement-card__top">
+                        <h3 class="statement-card__title">
+                            Виписка 1
+                        </h3>
+
+                        <button
+                            class="text-button remove-statement"
+                            type="button"
+                            hidden
+                        >
+                            Видалити
+                        </button>
+                    </div>
+
+                    <div class="statement-card__fields">
+                        <label class="field">
+                            <span class="field__label">Банк</span>
+
+                            <select class="bank-select" name="banks" required>
+                                {% for bank in banks %}
+                                    <option value="{{ bank.value }}">
+                                        {% if bank.value == "pumb" %}
+                                            ПУМБ
+                                        {% elif bank.value == "privat" %}
+                                            ПриватБанк
+                                        {% elif bank.value == "mono" %}
+                                            Mono
+                                        {% elif bank.value == "abank" %}
+                                            А-Банк
+                                        {% endif %}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </label>
+
+                        <div class="field">
+                            <span class="field__label">Виписка CSV</span>
+
+                            <div class="file-control">
+                                <input
+                                    class="upload-file-input"
+                                    type="file"
+                                    name="bank_statements"
+                                    accept=".csv"
+                                    aria-hidden="true"
+                                    tabindex="-1"
+                                    required
+                                >
+
+                                <button
+                                    class="choose-file-button"
+                                    type="button"
+                                    aria-label="Обрати файл: Банківська виписка CSV"
+                                >
+                                    Обрати файл
+                                </button>
+
+                                <span class="selected-file-name" aria-live="polite">
+                                    Файл не вибрано
+                                </span>
+
+                                <button
+                                    class="clear-file-button"
+                                    type="button"
+                                    hidden
+                                >
+                                    Очистити
+                                </button>
+                            </div>
+
+                            <span class="file-validation-message" hidden>
+                                Оберіть файл.
+                            </span>
+                        </div>
+
+                        <label class="field field--full mono-account" hidden>
+                            <span class="field__label">IBAN рахунку Mono</span>
+
+                            <input
+                                type="text"
+                                name="account_numbers"
+                                placeholder="UA543000010000000000000000000"
+                                autocomplete="off"
+                                spellcheck="false"
+                            >
+
+                            <span class="field__hint">
+                                Пробіли будуть видалені автоматично
+                            </span>
+                        </label>
+                    </div>
+                </article>
+            </div>
+
+            <div class="section-actions">
+                <button class="secondary-button" type="button" id="add-statement">
+                    + Додати виписку
+                </button>
+
+                <p class="statement-status" id="statement-status" aria-live="polite">
+                    1 з 10 виписок
+                </p>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">03</span>
+
+                <div>
+                    <h2>Дані Checkbox</h2>
+                    <p>
+                        Завантажте Звіт по Z-звітам із Checkbox за той самий календарний місяць.
+                    </p>
+                </div>
+            </div>
+
+            <div class="field">
+                <span class="field__label">Звіт по Z-звітам Checkbox XLSX</span>
+
+                <div class="file-control">
+                    <input
+                        class="upload-file-input"
+                        type="file"
+                        name="checkbox_report"
+                        accept=".xlsx"
+                        aria-hidden="true"
+                        tabindex="-1"
+                        required
+                    >
+
+                    <button
+                        class="choose-file-button"
+                        type="button"
+                        aria-label="Обрати файл: Звіт по Z-звітам Checkbox XLSX"
+                    >
+                        Обрати файл
+                    </button>
+
+                    <span class="selected-file-name" aria-live="polite">
+                        Файл не вибрано
+                    </span>
+
+                    <button
+                        class="clear-file-button"
+                        type="button"
+                        hidden
+                    >
+                        Очистити
+                    </button>
+                </div>
+
+                <span class="file-validation-message" hidden>
+                    Оберіть файл.
+                </span>
+
+                <span class="field__hint">
+                    Інші типи звітів Checkbox не підтримуються.
+                </span>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">04</span>
+
+                <div>
+                    <h2>Книга доходів</h2>
+                    <p>Оберіть шаблон і вкажіть назву робочого листа.</p>
+                </div>
+            </div>
+
+            <div class="field-grid">
+                <div class="field">
+                    <span class="field__label">Шаблон книги XLSX</span>
+
+                    <div class="file-control">
+                        <input
+                            class="upload-file-input"
+                            type="file"
+                            name="template_file"
+                            accept=".xlsx"
+                            aria-hidden="true"
+                            tabindex="-1"
+                            required
+                        >
+
+                        <button
+                            class="choose-file-button"
+                            type="button"
+                            aria-label="Обрати файл: Шаблон книги XLSX"
+                        >
+                            Обрати файл
+                        </button>
+
+                        <span class="selected-file-name" aria-live="polite">
+                            Файл не вибрано
+                        </span>
+
+                        <button
+                            class="clear-file-button"
+                            type="button"
+                            hidden
+                        >
+                            Очистити
+                        </button>
+                    </div>
+
+                    <span class="file-validation-message" hidden>
+                        Оберіть файл.
+                    </span>
+                </div>
+
+                <label class="field">
+                    <span class="field__label">Назва листа</span>
+
+                    <input
+                        type="text"
+                        name="sheet_name"
+                        value="2026"
+                        required
+                    >
+
+                    <span class="field__hint">Наприклад: 2026</span>
+                </label>
+
+                <label class="field field--full">
+                    <span class="field__label">Назва готового файлу</span>
+
+                    <input
+                        id="output-filename"
+                        type="text"
+                        name="output_filename"
+                        maxlength="180"
+                        placeholder="Книга доходів 2026.xlsx"
+                        autocomplete="off"
+                        required
+                    >
+
+                    <span class="field__hint">
+                        Після вибору шаблону тут з’явиться його назва.
+                        Її можна змінити перед формуванням книги.
+                    </span>
+                </label>
+            </div>
+        </section>
+
+        <section class="form-section">
+            <div class="section-heading">
+                <span class="section-number">05</span>
+
+                <div>
+                    <h2>Допоміжні колонки</h2>
+                    <p>
+                        Вкажіть, у які колонки записати складові доходу за видами розрахунків.
+                        Стандартний порядок J–M уже обрано.
+                    </p>
+                </div>
+            </div>
+
+            {% set helper_fields = [
+                {
+                    "name": "helper_total_column",
+                    "title": "Загальна сума",
+                    "description": "Сума Checkbox і банківських надходжень",
+                    "default": 10,
+                    "default_letter": "J"
+                },
+                {
+                    "name": "checkbox_card_column",
+                    "title": "Checkbox — безготівка",
+                    "description": "Оплати карткою за звітом Checkbox",
+                    "default": 11,
+                    "default_letter": "K"
+                },
+                {
+                    "name": "checkbox_cash_column",
+                    "title": "Checkbox — готівка",
+                    "description": "Готівкові оплати за звітом Checkbox",
+                    "default": 12,
+                    "default_letter": "L"
+                },
+                {
+                    "name": "bank_income_column",
+                    "title": "Перекази ФОП/ТОВ",
+                    "description": "Доходи з банківських виписок",
+                    "default": 13,
+                    "default_letter": "M"
+                }
+            ] %}
+
+            {% set helper_column_options = [
+                (10, "J"), (11, "K"), (12, "L"), (13, "M"),
+                (14, "N"), (15, "O")
+            ] %}
+
+            <div class="helper-columns-grid">
+                {% for field in helper_fields %}
+                    <label class="helper-column-card">
+                        <span class="helper-column-card__copy">
+                            <span class="helper-column-card__title">
+                                {{ field.title }}
+                            </span>
+
+                            <span class="helper-column-card__description">
+                                {{ field.description }}
+                            </span>
+                        </span>
+
+                        <span class="helper-column-card__control">
+                            <span class="helper-column-card__default">
+                                Стандартно {{ field.default_letter }}
+                            </span>
+
+                            <select
+                                class="helper-column-select"
+                                name="{{ field.name }}"
+                                aria-label="Колонка: {{ field.title }}"
+                                required
+                            >
+                                {% for column_number, column_letter in helper_column_options %}
+                                    <option
+                                        value="{{ column_number }}"
+                                        {% if column_number == field.default %}selected{% endif %}
+                                    >
+                                        {{ column_letter }} · колонка {{ column_number }}
+                                    </option>
+                                {% endfor %}
+                            </select>
+                        </span>
+                    </label>
+                {% endfor %}
+            </div>
+
+            <p
+                class="field-error"
+                id="helper-columns-error"
+                role="alert"
+                hidden
+            >
+                Кожен показник має бути призначений окремій колонці.
+            </p>
+        </section>
+
+        <aside class="manual-warning" aria-labelledby="manual-warning-title">
+            <span class="manual-warning__mark" aria-hidden="true">!</span>
+
+            <div>
+                <h2 id="manual-warning-title">
+                    Увага!
+                </h2>
+
+                <p>
+                    <strong>
+                    В частині розшифровки доходів за видами розрахунків можливо вносити зміни.
+                    Але необхідно потім перевірити та за необхідністю виправити суму доходів,
+                    що відображається в книзі за ті дні, де робили зміни.
+                    </strong>
+                </p>
+            </div>
+        </aside>
+
+        <section
+            class="generation-result"
+            id="generation-result"
+            aria-live="polite"
+            tabindex="-1"
+            hidden
+        >
+            <span
+                class="generation-result__mark"
+                id="generation-result-mark"
+                aria-hidden="true"
+            >
+                ✓
+            </span>
+
+            <div class="generation-result__content">
+                <h2 id="generation-result-title">Книгу сформовано</h2>
+                <p id="generation-result-message"></p>
+
+                <div
+                    class="checkbox-warning-list"
+                    id="checkbox-warning-list"
+                ></div>
+            </div>
+        </section>
+
+        <div class="submit-panel">
+            <p>
+                Після перевірки браузер автоматично завантажить готовий Excel.
+            </p>
+
+            <button class="submit-button" id="submit-button" type="submit">
+                <span class="button-spinner" aria-hidden="true"></span>
+                <span id="submit-label">Сформувати книгу</span>
+            </button>
+        </div>
+    </form>
+{% endblock %}
+
+{% block scripts %}
+    <script>
+        const maxStatements = 10;
+        const form = document.querySelector("#income-book-form");
+        const statementList = document.querySelector("#bank-statements");
+        const addStatementButton = document.querySelector("#add-statement");
+        const statementStatus = document.querySelector("#statement-status");
+        const submitButton = document.querySelector("#submit-button");
+        const submitLabel = document.querySelector("#submit-label");
+        const templateFileInput = form.querySelector(
+            'input[name="template_file"]',
+        );
+        const outputFilenameInput = document.querySelector("#output-filename");
+        const helperColumnSelects = [
+            ...form.querySelectorAll(".helper-column-select"),
+        ];
+        const helperColumnsError = document.querySelector(
+            "#helper-columns-error",
+        );
+        const generationResult = document.querySelector("#generation-result");
+        const generationResultMark = document.querySelector(
+            "#generation-result-mark",
+        );
+        const generationResultTitle = document.querySelector(
+            "#generation-result-title",
+        );
+        const generationResultMessage = document.querySelector(
+            "#generation-result-message",
+        );
+        const checkboxWarningList = document.querySelector(
+            "#checkbox-warning-list",
+        );
+        const statementTemplate = statementList
+            .querySelector(".bank-statement")
+            .cloneNode(true);
+
+        function setSubmitting(isSubmitting) {
+            form.classList.toggle("is-submitting", isSubmitting);
+            submitButton.disabled = isSubmitting;
+            submitLabel.textContent = isSubmitting
+                ? "Формуємо книгу…"
+                : "Сформувати книгу";
+        }
+
+        function formatDate(dateValue) {
+            const [year, month, day] = dateValue.split("-");
+            return `${day}.${month}.${year}`;
+        }
+
+        function formatMoney(value) {
+            const normalizedValue = String(value);
+            const isNegative = normalizedValue.startsWith("-");
+            const unsignedValue = isNegative
+                ? normalizedValue.slice(1)
+                : normalizedValue;
+            const [wholePart, fractionPart = "00"] = unsignedValue.split(".");
+            const groupedWholePart = wholePart.replace(
+                /\B(?=(\d{3})+(?!\d))/g,
+                "\u00a0",
+            );
+
+            return `${isNegative ? "−" : ""}${groupedWholePart},${fractionPart.padEnd(2, "0")} грн`;
+        }
+
+        function paymentMethodLabel(paymentMethod) {
+            return paymentMethod === "card"
+                ? "Checkbox — безготівка"
+                : "Checkbox — готівка";
+        }
+
+        function parseDownloadFilename(contentDisposition) {
+            if (!contentDisposition) {
+                return "income-book-result.xlsx";
+            }
+
+            const encodedMatch = contentDisposition.match(
+                /filename\*=UTF-8''([^;]+)/i,
+            );
+
+            if (encodedMatch) {
+                try {
+                    return decodeURIComponent(encodedMatch[1]);
+                } catch (_error) {
+                    return "income-book-result.xlsx";
+                }
+            }
+
+            const plainMatch = contentDisposition.match(/filename="([^"]+)"/i);
+            return plainMatch?.[1] || "income-book-result.xlsx";
+        }
+
+        function downloadWorkbook(blob, filename) {
+            const objectUrl = URL.createObjectURL(blob);
+            const downloadLink = document.createElement("a");
+
+            downloadLink.href = objectUrl;
+            downloadLink.download = filename;
+            document.body.append(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+            window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+        }
+
+        function createAmountItem(label, value, isResult = false) {
+            const item = document.createElement("div");
+            const term = document.createElement("dt");
+            const amount = document.createElement("dd");
+
+            item.className = "checkbox-warning-card__amount";
+            item.classList.toggle(
+                "checkbox-warning-card__amount--result",
+                isResult,
+            );
+            term.textContent = label;
+            amount.textContent = formatMoney(value);
+            item.append(term, amount);
+
+            return item;
+        }
+
+        function createWarningCard(warning) {
+            const card = document.createElement("article");
+            const heading = document.createElement("div");
+            const date = document.createElement("strong");
+            const paymentMethod = document.createElement("span");
+            const amounts = document.createElement("dl");
+
+            card.className = "checkbox-warning-card";
+            heading.className = "checkbox-warning-card__heading";
+            date.textContent = formatDate(warning.date);
+            paymentMethod.textContent = paymentMethodLabel(
+                warning.payment_method,
+            );
+            heading.append(date, paymentMethod);
+
+            amounts.className = "checkbox-warning-card__amounts";
+            amounts.append(
+                createAmountItem("Виручка", warning.revenue),
+                createAmountItem("Повернення", warning.refund),
+                createAmountItem("Результат", warning.result, true),
+            );
+
+            card.append(heading, amounts);
+            return card;
+        }
+
+        function showGenerationResult(warnings, filename, noIncome) {
+            const hasWarnings = warnings.length > 0;
+            const needsAttention = noIncome || hasWarnings;
+
+            generationResult.dataset.state = needsAttention
+                ? "warning"
+                : "success";
+            generationResultMark.textContent = needsAttention ? "!" : "✓";
+
+            if (noIncome) {
+                generationResultTitle.textContent =
+                    "Книгу сформовано — доходів не знайдено";
+                generationResultMessage.textContent =
+                    `Файл «${filename}» завантажено, але нові рядки доходу не додано. `
+                    + "Перевірте, чи вибрані правильні файли.";
+            } else if (hasWarnings) {
+                generationResultTitle.textContent =
+                    "Книгу сформовано — потрібна перевірка";
+                generationResultMessage.textContent =
+                    `Файл «${filename}» завантажено. `
+                    + "Перевірте від’ємні результати Checkbox нижче.";
+            } else {
+                generationResultTitle.textContent =
+                    "Книгу успішно сформовано";
+                generationResultMessage.textContent =
+                    `Файл «${filename}» завантажено. `
+                    + "Від’ємних результатів Checkbox не виявлено.";
+            }
+
+            checkboxWarningList.replaceChildren(
+                ...warnings.map(createWarningCard),
+            );
+            generationResult.hidden = false;
+            generationResult.focus({preventScroll: true});
+            generationResult.scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+            });
+        }
+
+        function showRequestError() {
+            generationResult.dataset.state = "error";
+            generationResultMark.textContent = "!";
+            generationResultTitle.textContent = "Не вдалося надіслати файли";
+            generationResultMessage.textContent =
+                "Перевірте з’єднання із сервером і спробуйте ще раз.";
+            checkboxWarningList.replaceChildren();
+            generationResult.hidden = false;
+            generationResult.focus({preventScroll: true});
+            generationResult.scrollIntoView({
+                behavior: "smooth",
+                block: "center",
+            });
+        }
+
+        function validateHelperColumns() {
+            const selectedColumns = helperColumnSelects.map(
+                (select) => select.value,
+            );
+            const columnCounts = selectedColumns.reduce((counts, column) => {
+                counts.set(column, (counts.get(column) || 0) + 1);
+                return counts;
+            }, new Map());
+            const duplicatedColumns = new Set(
+                [...columnCounts.entries()]
+                    .filter(([, count]) => count > 1)
+                    .map(([column]) => column),
+            );
+            const hasDuplicates = duplicatedColumns.size > 0;
+            const message = hasDuplicates
+                ? "Кожен показник має бути призначений окремій колонці."
+                : "";
+
+            helperColumnSelects.forEach((select) => {
+                const isDuplicated = duplicatedColumns.has(select.value);
+
+                select.setCustomValidity(isDuplicated ? message : "");
+                select.closest(".helper-column-card").classList.toggle(
+                    "has-error",
+                    isDuplicated,
+                );
+            });
+            helperColumnsError.hidden = !hasDuplicates;
+        }
+
+        function updateFileControl(input) {
+            const control = input.closest(".file-control");
+            const clearButton = control.querySelector(".clear-file-button");
+            const filename = control.querySelector(".selected-file-name");
+            const validationMessage = control.parentElement.querySelector(
+                ".file-validation-message",
+            );
+            const selectedFile = input.files[0];
+
+            filename.textContent = selectedFile
+                ? selectedFile.name
+                : "Файл не вибрано";
+            clearButton.hidden = !selectedFile;
+            input.setCustomValidity("");
+            input.removeAttribute("aria-invalid");
+            control.classList.remove("has-error");
+            validationMessage.hidden = true;
+        }
+
+        function showFileValidationError(input) {
+            const control = input.closest(".file-control");
+            const validationMessage = control.parentElement.querySelector(
+                ".file-validation-message",
+            );
+
+            input.setCustomValidity("Оберіть файл.");
+            input.setAttribute("aria-invalid", "true");
+            control.classList.add("has-error");
+            validationMessage.hidden = false;
+        }
+
+        function validateRequiredFiles() {
+            const missingFiles = [
+                ...form.querySelectorAll(".upload-file-input[required]"),
+            ].filter((input) => input.files.length === 0);
+
+            missingFiles.forEach(showFileValidationError);
+            return missingFiles;
+        }
+
+        function updateMonoField(statement) {
+            const bankSelect = statement.querySelector(".bank-select");
+            const accountField = statement.querySelector(".mono-account");
+            const accountInput = accountField.querySelector("input");
+            const isMono = bankSelect.value === "mono";
+
+            accountField.hidden = !isMono;
+            accountInput.required = isMono;
+
+            if (!isMono) {
+                accountInput.value = "";
+            }
+        }
+
+        function updateStatements() {
+            const statements = [...statementList.querySelectorAll(".bank-statement")];
+            const canRemove = statements.length > 1;
+
+            statements.forEach((statement, index) => {
+                statement.querySelector(".statement-card__title").textContent =
+                    `Виписка ${index + 1}`;
+                statement.querySelector(".remove-statement").hidden = !canRemove;
+                updateMonoField(statement);
+            });
+
+            addStatementButton.disabled = statements.length >= maxStatements;
+            statementStatus.textContent = `${statements.length} з ${maxStatements} виписок`;
+        }
+
+        addStatementButton.addEventListener("click", () => {
+            const statementCount = statementList.querySelectorAll(".bank-statement").length;
+
+            if (statementCount >= maxStatements) {
+                return;
+            }
+
+            const newStatement = statementTemplate.cloneNode(true);
+
+            newStatement.querySelectorAll("input").forEach((input) => {
+                input.value = "";
+            });
+            newStatement.querySelectorAll(".upload-file-input").forEach(
+                updateFileControl,
+            );
+
+            newStatement.querySelector("select").selectedIndex = 0;
+            statementList.append(newStatement);
+            updateStatements();
+        });
+
+        statementList.addEventListener("change", (event) => {
+            if (event.target.matches(".bank-select")) {
+                updateMonoField(event.target.closest(".bank-statement"));
+            }
+        });
+
+        statementList.addEventListener("click", (event) => {
+            const removeButton = event.target.closest(".remove-statement");
+
+            if (!removeButton) {
+                return;
+            }
+
+            removeButton.closest(".bank-statement").remove();
+            updateStatements();
+        });
+
+        helperColumnSelects.forEach((select) => {
+            select.addEventListener("change", validateHelperColumns);
+        });
+
+        form.addEventListener("change", (event) => {
+            if (event.target.matches(".upload-file-input")) {
+                updateFileControl(event.target);
+            }
+        });
+
+        form.addEventListener("invalid", (event) => {
+            const input = event.target;
+
+            if (
+                input.matches(".upload-file-input")
+                && input.required
+                && input.files.length === 0
+            ) {
+                event.preventDefault();
+                showFileValidationError(input);
+            }
+        }, true);
+
+        form.addEventListener("click", (event) => {
+            const chooseButton = event.target.closest(".choose-file-button");
+
+            if (chooseButton) {
+                chooseButton
+                    .closest(".file-control")
+                    .querySelector(".upload-file-input")
+                    .click();
+                return;
+            }
+
+            const clearButton = event.target.closest(".clear-file-button");
+
+            if (!clearButton) {
+                return;
+            }
+
+            const input = clearButton
+                .closest(".file-control")
+                .querySelector(".upload-file-input");
+            const previousFilename = input.files[0]?.name;
+
+            input.value = "";
+            updateFileControl(input);
+
+            if (
+                input === templateFileInput
+                && outputFilenameInput.value === previousFilename
+            ) {
+                outputFilenameInput.value = "";
+            }
+        });
+
+        templateFileInput.addEventListener("change", () => {
+            const selectedTemplate = templateFileInput.files[0];
+
+            if (selectedTemplate) {
+                outputFilenameInput.value = selectedTemplate.name;
+            }
+        });
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+            validateHelperColumns();
+
+            const missingFiles = validateRequiredFiles();
+
+            if (missingFiles.length > 0) {
+                const firstInvalidControl = missingFiles[0].closest(
+                    ".file-control",
+                );
+
+                firstInvalidControl
+                    .querySelector(".choose-file-button")
+                    .focus();
+                firstInvalidControl.scrollIntoView({
+                    behavior: "smooth",
+                    block: "center",
+                });
+                return;
+            }
+
+            if (!form.reportValidity()) {
+                return;
+            }
+
+            generationResult.hidden = true;
+            setSubmitting(true);
+
+            try {
+                const response = await fetch(form.action, {
+                    method: "POST",
+                    body: new FormData(form),
+                });
+                const contentType = response.headers.get("content-type") || "";
+
+                if (!response.ok || !contentType.includes("spreadsheetml.sheet")) {
+                    const responseHtml = await response.text();
+
+                    document.open();
+                    document.write(responseHtml);
+                    document.close();
+                    return;
+                }
+
+                const warningsHeader = response.headers.get(
+                    "x-checkbox-warnings",
+                );
+                const warnings = warningsHeader
+                    ? JSON.parse(warningsHeader)
+                    : [];
+                const noIncome = response.headers.get("x-no-income") === "true";
+                const filename = parseDownloadFilename(
+                    response.headers.get("content-disposition"),
+                );
+                const workbook = await response.blob();
+
+                downloadWorkbook(workbook, filename);
+                showGenerationResult(warnings, filename, noIncome);
+            } catch (_error) {
+                showRequestError();
+            } finally {
+                setSubmitting(false);
+            }
+        });
+
+        window.addEventListener("pageshow", () => {
+            setSubmitting(false);
+        });
+
+        updateStatements();
+        validateHelperColumns();
+        form.querySelectorAll(".upload-file-input").forEach(updateFileControl);
+    </script>
+{% endblock %}
