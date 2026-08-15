@@ -31,51 +31,116 @@
                 <span class="section-number">01</span>
 
                 <div>
-                    <h2>Профіль клієнта</h2>
-                    <p>Конфігурація визначає ФОП, власні рахунки та правила перевірки.</p>
+                    <h2>Оберіть ФОПа</h2>
+                    <p>Знайдіть клієнта за прізвищем, ім’ям або повним ПІБ.</p>
                 </div>
             </div>
 
             <div class="field">
-                <span class="field__label">Файл конфігурації YAML</span>
+                <label class="field__label" for="client-search">
+                    ФОП
+                </label>
 
-                <div class="file-control">
+                <div class="client-combobox" id="client-combobox">
+                    <div class="client-combobox__control">
+                        <span class="client-combobox__search-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" focusable="false">
+                                <circle cx="11" cy="11" r="6.5"></circle>
+                                <path d="m16 16 4 4"></path>
+                            </svg>
+                        </span>
+
+                        <input
+                            id="client-search"
+                            class="client-combobox__input"
+                            type="search"
+                            role="combobox"
+                            aria-autocomplete="list"
+                            aria-controls="client-options"
+                            aria-expanded="false"
+                            aria-haspopup="listbox"
+                            placeholder="Введіть прізвище або ім’я"
+                            autocomplete="off"
+                            spellcheck="false"
+                            {% if not clients %}disabled{% endif %}
+                            required
+                        >
+
+                        <button
+                            class="client-combobox__toggle"
+                            id="client-combobox-toggle"
+                            type="button"
+                            aria-label="Відкрити список ФОПів"
+                            tabindex="-1"
+                            {% if not clients %}disabled{% endif %}
+                        >
+                            <svg viewBox="0 0 20 20" focusable="false" aria-hidden="true">
+                                <path d="m5 7.5 5 5 5-5"></path>
+                            </svg>
+                        </button>
+                    </div>
+
                     <input
-                        class="upload-file-input"
-                        type="file"
-                        name="config_file"
-                        accept=".yaml,.yml"
-                        aria-hidden="true"
-                        tabindex="-1"
-                        required
+                        id="selected-client-id"
+                        type="hidden"
+                        name="client_id"
                     >
 
-                    <button
-                        class="choose-file-button"
-                        type="button"
-                        aria-label="Обрати файл: Файл конфігурації YAML"
-                    >
-                        Обрати файл
-                    </button>
-
-                    <span class="selected-file-name" aria-live="polite">
-                        Файл не вибрано
-                    </span>
-
-                    <button
-                        class="clear-file-button"
-                        type="button"
+                    <div
+                        class="client-combobox__panel"
+                        id="client-options"
+                        role="listbox"
+                        aria-label="Список ФОПів"
                         hidden
                     >
-                        Очистити
-                    </button>
+                        <div class="client-combobox__panel-header">
+                            <span>Результати пошуку</span>
+                            <span id="client-result-count">{{ clients | length }}</span>
+                        </div>
+
+                        <div class="client-combobox__options">
+                            {% for client in clients %}
+                                <button
+                                    class="client-option"
+                                    id="client-option-{{ loop.index }}"
+                                    type="button"
+                                    role="option"
+                                    aria-selected="false"
+                                    data-client-id="{{ client.client_id }}"
+                                    data-client-name="{{ client.display_name }}"
+                                    data-client-search="{{ client.search_text }}"
+                                    tabindex="-1"
+                                >
+                                    <span class="client-option__badge" aria-hidden="true">
+                                        ФОП
+                                    </span>
+
+                                    <span class="client-option__name">
+                                        {{ client.display_name }}
+                                    </span>
+
+                                    <span class="client-option__check" aria-hidden="true">
+                                        ✓
+                                    </span>
+                                </button>
+                            {% endfor %}
+                        </div>
+
+                        <p class="client-combobox__empty" id="client-empty" hidden>
+                            Нічого не знайдено. Перевірте написання прізвища.
+                        </p>
+                    </div>
                 </div>
 
-                <span class="file-validation-message" hidden>
-                    Оберіть файл.
+                <span class="client-validation-message" id="client-validation" hidden>
+                    Оберіть ФОПа зі списку.
                 </span>
 
-                <span class="field__hint">Підтримуються файли .yaml та .yml</span>
+                {% if client_catalog_error %}
+                    <span class="client-catalog-error" role="alert">
+                        {{ client_catalog_error }}
+                    </span>
+                {% endif %}
             </div>
         </section>
 
@@ -496,6 +561,25 @@
     <script>
         const maxStatements = 10;
         const form = document.querySelector("#income-book-form");
+        const clientCombobox = document.querySelector("#client-combobox");
+        const clientSearchInput = document.querySelector("#client-search");
+        const selectedClientInput = document.querySelector(
+            "#selected-client-id",
+        );
+        const clientToggle = document.querySelector(
+            "#client-combobox-toggle",
+        );
+        const clientOptionsPanel = document.querySelector("#client-options");
+        const clientOptions = [
+            ...document.querySelectorAll(".client-option"),
+        ];
+        const clientResultCount = document.querySelector(
+            "#client-result-count",
+        );
+        const clientEmpty = document.querySelector("#client-empty");
+        const clientValidation = document.querySelector(
+            "#client-validation",
+        );
         const statementList = document.querySelector("#bank-statements");
         const addStatementButton = document.querySelector("#add-statement");
         const statementStatus = document.querySelector("#statement-status");
@@ -527,6 +611,7 @@
         const statementTemplate = statementList
             .querySelector(".bank-statement")
             .cloneNode(true);
+        let activeClientIndex = -1;
 
         function setSubmitting(isSubmitting) {
             form.classList.toggle("is-submitting", isSubmitting);
@@ -535,6 +620,214 @@
                 ? "Формуємо книгу…"
                 : "Сформувати книгу";
         }
+
+        function normalizeClientSearch(value) {
+            return value
+                .toLocaleLowerCase("uk-UA")
+                .replace(/[’'`]/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
+        }
+
+        function visibleClientOptions() {
+            return clientOptions.filter((option) => !option.hidden);
+        }
+
+        function setActiveClient(index) {
+            const visibleOptions = visibleClientOptions();
+
+            clientOptions.forEach((option) => {
+                option.classList.remove("is-active");
+            });
+
+            if (visibleOptions.length === 0) {
+                activeClientIndex = -1;
+                clientSearchInput.removeAttribute("aria-activedescendant");
+                return;
+            }
+
+            activeClientIndex = Math.max(
+                0,
+                Math.min(index, visibleOptions.length - 1),
+            );
+            const activeOption = visibleOptions[activeClientIndex];
+
+            activeOption.classList.add("is-active");
+            clientSearchInput.setAttribute(
+                "aria-activedescendant",
+                activeOption.id,
+            );
+            activeOption.scrollIntoView({block: "nearest"});
+        }
+
+        function openClientOptions() {
+            if (clientSearchInput.disabled || clientOptions.length === 0) {
+                return;
+            }
+
+            clientOptionsPanel.hidden = false;
+            clientCombobox.dataset.open = "true";
+            clientSearchInput.setAttribute("aria-expanded", "true");
+
+            const visibleOptions = visibleClientOptions();
+            const selectedIndex = visibleOptions.findIndex(
+                (option) => option.dataset.clientId === selectedClientInput.value,
+            );
+            setActiveClient(selectedIndex >= 0 ? selectedIndex : 0);
+        }
+
+        function closeClientOptions() {
+            clientOptionsPanel.hidden = true;
+            clientCombobox.dataset.open = "false";
+            clientSearchInput.setAttribute("aria-expanded", "false");
+            clientSearchInput.removeAttribute("aria-activedescendant");
+            clientOptions.forEach((option) => {
+                option.classList.remove("is-active");
+            });
+            activeClientIndex = -1;
+        }
+
+        function clearClientValidation() {
+            clientSearchInput.setCustomValidity("");
+            clientSearchInput.removeAttribute("aria-invalid");
+            clientCombobox.classList.remove("has-error");
+            clientValidation.hidden = true;
+        }
+
+        function showClientValidationError() {
+            clientSearchInput.setCustomValidity("Оберіть ФОПа зі списку.");
+            clientSearchInput.setAttribute("aria-invalid", "true");
+            clientCombobox.classList.add("has-error");
+            clientValidation.hidden = false;
+        }
+
+        function selectClient(option) {
+            selectedClientInput.value = option.dataset.clientId;
+            clientSearchInput.value = option.dataset.clientName;
+            clientOptions.forEach((clientOption) => {
+                const isSelected = clientOption === option;
+                clientOption.setAttribute(
+                    "aria-selected",
+                    isSelected ? "true" : "false",
+                );
+            });
+            clearClientValidation();
+            clientSearchInput.focus({preventScroll: true});
+            closeClientOptions();
+        }
+
+        function filterClientOptions(query) {
+            const queryParts = normalizeClientSearch(query)
+                .split(" ")
+                .filter(Boolean);
+            let resultCount = 0;
+
+            clientOptions.forEach((option) => {
+                const searchableText = normalizeClientSearch(
+                    option.dataset.clientSearch,
+                );
+                const matches = queryParts.every((part) =>
+                    searchableText.includes(part),
+                );
+
+                option.hidden = !matches;
+                resultCount += matches ? 1 : 0;
+            });
+
+            clientResultCount.textContent = String(resultCount);
+            clientEmpty.hidden = resultCount !== 0;
+            activeClientIndex = -1;
+            clientSearchInput.removeAttribute("aria-activedescendant");
+        }
+
+        function validateClientSelection() {
+            if (selectedClientInput.value) {
+                clearClientValidation();
+                return true;
+            }
+
+            showClientValidationError();
+            return false;
+        }
+
+        clientSearchInput.addEventListener("focus", () => {
+            filterClientOptions(clientSearchInput.value);
+            openClientOptions();
+        });
+
+        clientSearchInput.addEventListener("input", () => {
+            const selectedOption = clientOptions.find(
+                (option) => option.dataset.clientId === selectedClientInput.value,
+            );
+
+            if (
+                selectedOption
+                && clientSearchInput.value !== selectedOption.dataset.clientName
+            ) {
+                selectedClientInput.value = "";
+                selectedOption.setAttribute("aria-selected", "false");
+            }
+
+            clearClientValidation();
+            filterClientOptions(clientSearchInput.value);
+            openClientOptions();
+        });
+
+        clientSearchInput.addEventListener("keydown", (event) => {
+            const visibleOptions = visibleClientOptions();
+
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                openClientOptions();
+                setActiveClient(
+                    activeClientIndex < visibleOptions.length - 1
+                        ? activeClientIndex + 1
+                        : 0,
+                );
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                openClientOptions();
+                setActiveClient(
+                    activeClientIndex > 0
+                        ? activeClientIndex - 1
+                        : visibleOptions.length - 1,
+                );
+            } else if (event.key === "Enter" && !clientOptionsPanel.hidden) {
+                event.preventDefault();
+                const option = visibleOptions[activeClientIndex];
+
+                if (option) {
+                    selectClient(option);
+                }
+            } else if (event.key === "Escape") {
+                closeClientOptions();
+            }
+        });
+
+        clientToggle.addEventListener("click", () => {
+            if (clientOptionsPanel.hidden) {
+                filterClientOptions(clientSearchInput.value);
+                openClientOptions();
+                clientSearchInput.focus();
+            } else {
+                closeClientOptions();
+                clientSearchInput.focus();
+            }
+        });
+
+        clientOptionsPanel.addEventListener("click", (event) => {
+            const option = event.target.closest(".client-option");
+
+            if (option) {
+                selectClient(option);
+            }
+        });
+
+        document.addEventListener("pointerdown", (event) => {
+            if (!clientCombobox.contains(event.target)) {
+                closeClientOptions();
+            }
+        });
 
         function formatDate(dateValue) {
             const [year, month, day] = dateValue.split("-");
@@ -843,6 +1136,12 @@
         form.addEventListener("invalid", (event) => {
             const input = event.target;
 
+            if (input === clientSearchInput && !selectedClientInput.value) {
+                event.preventDefault();
+                showClientValidationError();
+                return;
+            }
+
             if (
                 input.matches(".upload-file-input")
                 && input.required
@@ -897,6 +1196,15 @@
         form.addEventListener("submit", async (event) => {
             event.preventDefault();
             validateHelperColumns();
+
+            if (!validateClientSelection()) {
+                clientSearchInput.focus();
+                clientCombobox.scrollIntoView({
+                    behavior: "smooth",
+                    block: "center",
+                });
+                return;
+            }
 
             const missingFiles = validateRequiredFiles();
 

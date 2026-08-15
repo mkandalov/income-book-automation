@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 income-book = "income_book_automation.cli:app"
+generate-client-profiles = "income_book_automation.client_profile_generator:main"
 
 [project.urls]
 Repository = "https://github.com/mkandalov/income-book-automation"

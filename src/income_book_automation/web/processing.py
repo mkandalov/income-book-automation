@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 
 from fastapi import UploadFile
 
-from income_book_automation.config import ClientConfigError, load_client_profile
+from income_book_automation.config import load_client_profile_by_id
 from income_book_automation.exporters.income_book import (
     HelperColumnMapping,
     IncomeBookExportError,
@@ -18,6 +18,7 @@ from income_book_automation.models import (
     BankName,
     CheckboxRefundWarning,
     ClassifiedTransaction,
+    ClientProfile,
     ReviewField,
 )
 from income_book_automation.pipeline import (
@@ -30,7 +31,6 @@ MAX_BANK_STATEMENTS = 10
 MAX_UPLOAD_SIZE_MB = 20
 MAX_UPLOAD_SIZE_BYTES = MAX_UPLOAD_SIZE_MB * 1024 * 1024
 
-YAML_EXTENSIONS = frozenset({".yaml", ".yml"})
 CSV_EXTENSIONS = frozenset({".csv"})
 XLSX_EXTENSIONS = frozenset({".xlsx"})
 
@@ -128,7 +128,7 @@ def _validate_upload(
 
 def _validate_request(
     *,
-    config_file: UploadFile,
+    client_id: str,
     banks: list[BankName],
     bank_statements: list[UploadFile],
     account_numbers: list[str],
@@ -136,6 +136,9 @@ def _validate_request(
     template_file: UploadFile,
     sheet_name: str,
 ) -> list[str | None]:
+    if not client_id.strip():
+        raise UploadInputError("Оберіть ФОПа зі списку.")
+
     if not banks:
         raise UploadInputError("Додайте щонайменше одну банківську виписку.")
 
@@ -152,12 +155,6 @@ def _validate_request(
 
     if not sheet_name.strip():
         raise UploadInputError("Вкажіть назву листа у шаблоні книги доходів.")
-
-    _validate_upload(
-        config_file,
-        label="Профіль клієнта",
-        allowed_extensions=YAML_EXTENSIONS,
-    )
 
     _validate_upload(
         checkbox_report,
@@ -310,7 +307,8 @@ def build_review_transaction_rows(
 
 def generate_income_book_from_uploads(
     *,
-    config_file: UploadFile,
+    client_id: str,
+    client_config_directory: Path,
     banks: list[BankName],
     bank_statements: list[UploadFile],
     account_numbers: list[str],
@@ -320,7 +318,7 @@ def generate_income_book_from_uploads(
     helper_columns: HelperColumnMapping | None = None,
 ) -> WebGenerationResult:
     normalized_accounts = _validate_request(
-        config_file=config_file,
+        client_id=client_id,
         banks=banks,
         bank_statements=bank_statements,
         account_numbers=account_numbers,
@@ -328,16 +326,14 @@ def generate_income_book_from_uploads(
         template_file=template_file,
         sheet_name=sheet_name,
     )
+    client: ClientProfile = load_client_profile_by_id(
+        client_config_directory,
+        client_id,
+    )
 
     with TemporaryDirectory(prefix="income-book-") as temporary_directory:
         workspace = Path(temporary_directory)
 
-        config_path = _original_upload_path(
-            workspace,
-            "config",
-            config_file,
-            fallback_name="client.yaml",
-        )
         checkbox_path = _original_upload_path(
             workspace,
             "checkbox",
@@ -352,21 +348,12 @@ def generate_income_book_from_uploads(
         )
         output_path = workspace / "result.xlsx"
 
-        _save_upload(config_file, config_path, label="профіль клієнта")
         _save_upload(checkbox_report, checkbox_path, label="Z-звіт Checkbox")
         _save_upload(
             template_file,
             template_path,
             label="шаблон книги доходів",
         )
-
-        try:
-            client = load_client_profile(config_path)
-        except ClientConfigError as error:
-            raise ClientConfigError(
-                f"Профіль клієнта «{config_path.name}» містить помилку. "
-                "Перевірте структуру та обов'язкові поля YAML-файлу."
-            ) from error
 
         sources: list[BankStatementSource] = []
 

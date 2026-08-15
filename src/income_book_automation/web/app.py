@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
@@ -7,7 +8,10 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from income_book_automation.config import ClientConfigError
+from income_book_automation.config import (
+    ClientConfigError,
+    list_client_profile_options,
+)
 from income_book_automation.exporters.income_book import (
     HelperColumnMapping,
     IncomeBookExportError,
@@ -28,6 +32,13 @@ from income_book_automation.web.processing import (
 )
 
 WEB_DIRECTORY = Path(__file__).parent
+PROJECT_DIRECTORY = WEB_DIRECTORY.parents[2]
+CLIENT_CONFIG_DIRECTORY = Path(
+    os.environ.get(
+        "INCOME_BOOK_CLIENTS_DIR",
+        PROJECT_DIRECTORY / "private_data" / "clients",
+    )
+)
 
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
 
@@ -44,12 +55,23 @@ def health() -> dict[str, str]:
 
 @app.get("/", response_class=HTMLResponse)
 def index(request: Request) -> HTMLResponse:
+    try:
+        clients = list_client_profile_options(CLIENT_CONFIG_DIRECTORY)
+        client_catalog_error = None
+    except ClientConfigError:
+        clients = ()
+        client_catalog_error = (
+            "Список ФОПів поки недоступний. Зверніться до адміністратора сервісу."
+        )
+
     return templates.TemplateResponse(
         request=request,
         name="index.html",
         context={
             "page_title": "Income Book Automation",
             "banks": tuple(BankName),
+            "clients": clients,
+            "client_catalog_error": client_catalog_error,
         },
     )
 
@@ -109,7 +131,7 @@ def _serialize_checkbox_warnings(
 @app.post("/generate")
 def generate_income_book(
     request: Request,
-    config_file: Annotated[UploadFile, File()],
+    client_id: Annotated[str, Form()],
     banks: Annotated[list[BankName], Form()],
     bank_statements: Annotated[list[UploadFile], File()],
     account_numbers: Annotated[list[str], Form()],
@@ -131,7 +153,8 @@ def generate_income_book(
         )
 
         result = generate_income_book_from_uploads(
-            config_file=config_file,
+            client_id=client_id,
+            client_config_directory=CLIENT_CONFIG_DIRECTORY,
             banks=banks,
             bank_statements=bank_statements,
             account_numbers=account_numbers,

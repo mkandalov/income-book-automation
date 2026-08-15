@@ -5,7 +5,9 @@ import pytest
 from income_book_automation.config import (
     ClientConfigReadError,
     ClientConfigValidationError,
+    list_client_profile_options,
     load_client_profile,
+    load_client_profile_by_id,
 )
 
 VALID_CONFIG = """\
@@ -140,3 +142,69 @@ def test_example_client_config_is_valid() -> None:
     profile = load_client_profile(config_path)
 
     assert profile.client_id == "client-001"
+
+
+def test_lists_safe_client_options_and_loads_selected_profile(
+    tmp_path: Path,
+) -> None:
+    config_directory = tmp_path / "clients"
+    config_directory.mkdir()
+    (config_directory / "second.yaml").write_text(
+        """\
+client_id: "client-002"
+legal_name: "ФОП Яскравий Ярослав Іванович"
+tax_id: "2222222222"
+name_aliases:
+  - "Яскравий Я.І."
+""",
+        encoding="utf-8",
+    )
+    (config_directory / "first.yml").write_text(
+        """\
+client_id: "client-001"
+legal_name: "ФОП Абетка Анна Петрівна"
+tax_id: "1111111111"
+""",
+        encoding="utf-8",
+    )
+
+    options = list_client_profile_options(config_directory)
+    selected_profile = load_client_profile_by_id(
+        config_directory,
+        options[1].client_id,
+    )
+
+    assert [option.display_name for option in options] == [
+        "Абетка Анна Петрівна",
+        "Яскравий Ярослав Іванович",
+    ]
+    assert options[1].client_id.startswith("client-option-")
+    assert options[1].client_id != "client-002"
+    assert "Яскравий Я.І." in options[1].search_text
+    assert "2222222222" not in options[1].search_text
+    assert selected_profile.legal_name == "ФОП Яскравий Ярослав Іванович"
+
+
+def test_rejects_unknown_client_id(tmp_path: Path) -> None:
+    config_directory = tmp_path / "clients"
+    config_directory.mkdir()
+    (config_directory / "client.yaml").write_text(VALID_CONFIG, encoding="utf-8")
+
+    with pytest.raises(
+        ClientConfigValidationError,
+        match="does not exist",
+    ):
+        load_client_profile_by_id(config_directory, "client-unknown")
+
+
+def test_rejects_duplicate_client_ids(tmp_path: Path) -> None:
+    config_directory = tmp_path / "clients"
+    config_directory.mkdir()
+    (config_directory / "first.yaml").write_text(VALID_CONFIG, encoding="utf-8")
+    (config_directory / "second.yaml").write_text(VALID_CONFIG, encoding="utf-8")
+
+    with pytest.raises(
+        ClientConfigValidationError,
+        match="duplicate client_id",
+    ):
+        list_client_profile_options(config_directory)
