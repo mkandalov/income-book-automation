@@ -17,6 +17,7 @@ outputs/
 *.pdf
 *.xls
 *.xlsx
+*.zip
 
 .DS_Store
 *.log
