@@ -7,20 +7,21 @@ from fastapi.testclient import TestClient
 from httpx2 import Response
 from pytest import MonkeyPatch
 
+import income_book_automation.web.app as web_app
+from income_book_automation.config import ClientProfileOption
 from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.models import (
     CheckboxPaymentMethod,
     CheckboxRefundWarning,
 )
 from income_book_automation.pipeline import UnresolvedTransactionsError
-from income_book_automation.web.app import app
 from income_book_automation.web.processing import (
     ReviewTransactionRow,
     UploadInputError,
     WebGenerationResult,
 )
 
-client = TestClient(app)
+client = TestClient(web_app.app)
 
 
 def _post_generate(
@@ -35,6 +36,7 @@ def _post_generate(
     return client.post(
         "/generate",
         data={
+            "client_id": "client-test-001",
             "banks": ["pumb"],
             "account_numbers": [""],
             "sheet_name": "2026",
@@ -45,10 +47,6 @@ def _post_generate(
             "bank_income_column": bank_income_column,
         },
         files=[
-            (
-                "config_file",
-                ("client.yaml", b"synthetic-config", "application/yaml"),
-            ),
             (
                 "bank_statements",
                 ("statement.csv", b"synthetic-bank-statement", "text/csv"),
@@ -86,7 +84,18 @@ def test_health_returns_ok() -> None:
     assert response.json() == {"status": "ok"}
 
 
-def test_index_returns_html_page() -> None:
+def test_index_returns_html_page(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        web_app,
+        "list_client_profile_options",
+        lambda _directory: (
+            ClientProfileOption(
+                client_id="client-test-001",
+                display_name="Тестовий Тарас Іванович",
+                search_text="Тестовий Тарас Іванович ФОП Тестовий Т.І.",
+            ),
+        ),
+    )
     response = client.get("/")
 
     assert response.status_code == 200
@@ -97,10 +106,18 @@ def test_index_returns_html_page() -> None:
     assert 'name="checkbox_card_column"' in response.text
     assert 'name="checkbox_cash_column"' in response.text
     assert 'name="bank_income_column"' in response.text
-    assert response.text.count('class="clear-file-button"') == 4
-    assert response.text.count('class="choose-file-button"') == 4
-    assert response.text.count('class="selected-file-name"') == 4
-    assert response.text.count('class="file-validation-message"') == 4
+    assert 'name="client_id"' in response.text
+    assert 'id="client-search"' in response.text
+    assert 'role="combobox"' in response.text
+    assert 'role="listbox"' in response.text
+    assert "Тестовий Тарас Іванович" in response.text
+    assert "client-test-001" in response.text
+    assert "1234567890" not in response.text
+    assert "налаштування профілю зберігаються на сервері" not in response.text
+    assert response.text.count('class="clear-file-button"') == 3
+    assert response.text.count('class="choose-file-button"') == 3
+    assert response.text.count('class="selected-file-name"') == 3
+    assert response.text.count('class="file-validation-message"') == 3
     assert "Обрати файл" in response.text
     assert "Файл не вибрано" in response.text
     assert "Оберіть файл." in response.text

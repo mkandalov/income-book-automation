@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook, load_workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import Border, PatternFill, Side
+from openpyxl.worksheet.worksheet import Worksheet
 
 from income_book_automation.exporters.income_book import (
     HelperColumnMapping,
@@ -32,16 +33,24 @@ def _create_template(path: Path) -> None:
     workbook.close()
 
 
-def _entry(day: int = 1) -> DailyIncomeBookEntry:
+def _entry(
+    day: int = 1,
+    *,
+    month: int = 6,
+) -> DailyIncomeBookEntry:
     return DailyIncomeBookEntry(
-        date=date(2026, 6, day),
+        date=date(2026, month, day),
         checkbox_card_income=Decimal("90.00"),
         checkbox_cash_income=Decimal("50.00"),
         bank_income=Decimal("20.00"),
     )
 
 
-def _create_book_through_may(path: Path) -> None:
+def _create_book_through_may(
+    path: Path,
+    *,
+    may_total_label: str = "Всього травень:",
+) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "2026"
@@ -59,7 +68,7 @@ def _create_book_through_may(path: Path) -> None:
     sheet["D8"] = "=B8-C8"
     sheet["F8"] = "=D8+E8"
     sheet["J8"] = "=K8+L8+M8"
-    sheet["A9"] = "Всього травень:"
+    sheet["A9"] = may_total_label
     sheet["B9"] = "=SUM(B8:B8)"
 
     sheet["A10"] = "Всього 2026 рік:"
@@ -71,6 +80,217 @@ def _create_book_through_may(path: Path) -> None:
 
     workbook.save(path)
     workbook.close()
+
+
+TOTAL_FORMULA_COLUMNS = ("B", "C", "E", "H", "J", "K", "L", "M")
+TEST_MONTH_NAMES = {
+    1: "січень",
+    2: "лютий",
+    3: "березень",
+    4: "квітень",
+    5: "травень",
+    6: "червень",
+    7: "липень",
+    8: "серпень",
+    9: "вересень",
+    10: "жовтень",
+    11: "листопад",
+    12: "грудень",
+}
+
+
+def _write_existing_daily_row(
+    sheet: Worksheet,
+    row_number: int,
+    transaction_date: date,
+) -> None:
+    sheet.cell(row=row_number, column=1).value = transaction_date
+
+    for column in (2, 3, 5, 8, 10, 11, 12, 13):
+        sheet.cell(row=row_number, column=column).value = Decimal(
+            row_number * 100 + column
+        )
+
+    sheet.cell(row=row_number, column=4).value = f"=B{row_number}-C{row_number}"
+    sheet.cell(row=row_number, column=6).value = f"=D{row_number}+E{row_number}"
+    sheet.cell(row=row_number, column=7).value = Decimal("0.00")
+
+
+def _write_existing_month_total(
+    sheet: Worksheet,
+    row_number: int,
+    month_name: str,
+    first_daily_row: int,
+    last_daily_row: int,
+) -> None:
+    sheet.cell(row=row_number, column=1).value = f"Всього {month_name}:"
+
+    for column in TOTAL_FORMULA_COLUMNS:
+        sheet[f"{column}{row_number}"] = (
+            f"=SUM({column}{first_daily_row}:{column}{last_daily_row})"
+        )
+
+    sheet.cell(row=row_number, column=4).value = f"=B{row_number}-C{row_number}"
+    sheet.cell(row=row_number, column=6).value = f"=D{row_number}+E{row_number}"
+    sheet.cell(row=row_number, column=7).value = Decimal("0.00")
+
+
+def _create_book_with_first_five_months(path: Path) -> dict[int, int]:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "2026"
+
+    month_days = {
+        1: ("січень", [2, 19]),
+        2: ("лютий", [11]),
+        3: ("березень", [1, 14, 27]),
+        4: ("квітень", [3, 22]),
+        5: ("травень", [2, 9, 18, 30]),
+    }
+    month_total_rows: dict[int, int] = {}
+    row_number = 6
+
+    for month, (month_name, days) in month_days.items():
+        first_daily_row = row_number
+
+        for day in days:
+            _write_existing_daily_row(
+                sheet,
+                row_number,
+                date(2026, month, day),
+            )
+            row_number += 1
+
+        month_total_rows[month] = row_number
+        _write_existing_month_total(
+            sheet,
+            row_number,
+            month_name,
+            first_daily_row,
+            row_number - 1,
+        )
+
+        if month == 5:
+            thin_side = Side(style="thin", color="000000")
+            full_border = Border(
+                left=thin_side,
+                right=thin_side,
+                top=thin_side,
+                bottom=thin_side,
+            )
+            vertical_border = Border(
+                left=thin_side,
+                right=thin_side,
+            )
+
+            for column in range(1, 9):
+                sheet.cell(row=row_number, column=column).border = full_border
+
+            sheet.cell(row=row_number, column=10).border = full_border
+
+            for column in range(11, 15):
+                sheet.cell(row=row_number, column=column).border = vertical_border
+
+        row_number += 1
+
+        if month == 3:
+            sheet.cell(row=row_number, column=1).value = "Всього 1 кв 2026:"
+
+            for column in TOTAL_FORMULA_COLUMNS:
+                references = "+".join(
+                    f"{column}{month_total_rows[quarter_month]}"
+                    for quarter_month in range(1, 4)
+                )
+                sheet[f"{column}{row_number}"] = f"={references}"
+
+            row_number += 1
+
+    sheet.cell(row=row_number, column=1).value = "Всього 2026 рік:"
+    stale_cell = sheet.cell(row=row_number, column=9)
+    stale_cell.value = "stale value"
+    stale_cell.fill = PatternFill(fill_type="solid", fgColor="FFFF00")
+    stale_cell.border = Border(
+        left=Side(style="thin", color="000000"),
+        right=Side(style="thin", color="000000"),
+        top=Side(style="thin", color="000000"),
+        bottom=Side(style="thin", color="000000"),
+    )
+    sheet.cell(row=row_number, column=14).value = "=N8+N10+N14+N18+N23"
+
+    for column in TOTAL_FORMULA_COLUMNS:
+        references = "+".join(
+            f"{column}{month_total_rows[existing_month]}"
+            for existing_month in range(1, 6)
+        )
+        sheet[f"{column}{row_number}"] = f"={references}"
+
+    workbook.save(path)
+    workbook.close()
+    return month_total_rows
+
+
+def _create_book_before_quarter_end(
+    path: Path,
+    ending_month: int,
+) -> tuple[dict[int, int], int]:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "2026"
+    month_total_rows: dict[int, int] = {}
+    row_number = 6
+
+    for month in range(1, ending_month):
+        first_daily_row = row_number
+        day_count = month % 3 + 1
+
+        for day in range(1, day_count + 1):
+            _write_existing_daily_row(
+                sheet,
+                row_number,
+                date(2026, month, day),
+            )
+            row_number += 1
+
+        month_total_rows[month] = row_number
+        _write_existing_month_total(
+            sheet,
+            row_number,
+            TEST_MONTH_NAMES[month],
+            first_daily_row,
+            row_number - 1,
+        )
+        row_number += 1
+
+        if month % 3 == 0:
+            quarter = (month - 1) // 3 + 1
+            quarter_months = range(month - 2, month + 1)
+            sheet.cell(row=row_number, column=1).value = f"Всього {quarter} кв 2026:"
+
+            for column in TOTAL_FORMULA_COLUMNS:
+                references = "+".join(
+                    f"{column}{month_total_rows[quarter_month]}"
+                    for quarter_month in quarter_months
+                )
+                sheet[f"{column}{row_number}"] = f"={references}"
+
+            row_number += 1
+
+        if month == 6:
+            sheet.cell(row=row_number, column=1).value = "Всього 1 півріччя 2026:"
+            row_number += 1
+
+    year_total_row = row_number
+    sheet.cell(row=year_total_row, column=1).value = "Всього 2026 рік:"
+
+    for column in TOTAL_FORMULA_COLUMNS:
+        references = "+".join(
+            f"{column}{month_total_rows[month]}" for month in range(1, ending_month)
+        )
+        sheet[f"{column}{year_total_row}"] = f"={references}"
+
+    workbook.save(path)
+    workbook.close()
+    return month_total_rows, year_total_row
 
 
 def test_export_income_book_updates_matching_date_and_preserves_template(
@@ -275,6 +495,302 @@ def test_export_income_book_appends_new_month_and_period_totals(
 
         assert sheet["A15"].value == "Всього 2026 рік:"
         assert sheet["B15"].value == "=B7+B9+B12"
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_repairs_misspelled_month_total_label(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_through_may(
+        template_path,
+        may_total_label="Всььго травень:",
+    )
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=3), _entry(day=1)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+
+        assert sheet["B13"].value == "=B7+B9+B12"
+        assert sheet["B14"].value == "=B7+B9+B12"
+        assert sheet["B15"].value == "=B7+B9+B12"
+        assert sheet["A9"].value == "Всього травень:"
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_rejects_duplicate_month_total_rows(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_through_may(template_path)
+
+    workbook = load_workbook(template_path)
+    try:
+        sheet = workbook["2026"]
+        sheet.insert_rows(10)
+        sheet["A10"] = "Всього травень:"
+        sheet["B10"] = "=SUM(B8:B8)"
+        workbook.save(template_path)
+    finally:
+        workbook.close()
+
+    with pytest.raises(
+        IncomeBookExportError,
+        match="multiple total rows found for month: травень",
+    ):
+        export_income_book(
+            template_path,
+            output_path,
+            [_entry(day=1), _entry(day=3)],
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+
+def test_export_income_book_rejects_month_data_without_total_row(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_through_may(
+        template_path,
+        may_total_label="Нерозпізнаний підсумок:",
+    )
+
+    with pytest.raises(
+        IncomeBookExportError,
+        match="month total row not found for existing data: травень",
+    ):
+        export_income_book(
+            template_path,
+            output_path,
+            [_entry(day=1), _entry(day=3)],
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+
+def test_export_income_book_uses_actual_month_totals_for_all_periods(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    month_total_rows = _create_book_with_first_five_months(template_path)
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=21), _entry(day=1), _entry(day=7)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        june_daily_rows = [24, 25, 26]
+        june_total_row = 27
+        second_quarter_row = 28
+        half_year_row = 29
+        year_total_row = 30
+
+        assert [
+            sheet.cell(row=row_number, column=1).value.date()
+            for row_number in june_daily_rows
+        ] == [
+            date(2026, 6, 1),
+            date(2026, 6, 7),
+            date(2026, 6, 21),
+        ]
+
+        month_total_rows[6] = june_total_row
+        second_quarter_months = range(4, 7)
+        half_year_months = range(1, 7)
+
+        for column in TOTAL_FORMULA_COLUMNS:
+            assert sheet[f"{column}{june_total_row}"].value == (
+                f"=SUM({column}24:{column}26)"
+            )
+
+            second_quarter_references = "+".join(
+                f"{column}{month_total_rows[month]}" for month in second_quarter_months
+            )
+            assert sheet[f"{column}{second_quarter_row}"].value == (
+                f"={second_quarter_references}"
+            )
+
+            half_year_references = "+".join(
+                f"{column}{month_total_rows[month]}" for month in half_year_months
+            )
+            assert sheet[f"{column}{half_year_row}"].value == (
+                f"={half_year_references}"
+            )
+            assert sheet[f"{column}{year_total_row}"].value == (
+                f"={half_year_references}"
+            )
+
+        assert sheet[f"D{second_quarter_row}"].value == (
+            f"=B{second_quarter_row}-C{second_quarter_row}"
+        )
+        assert sheet[f"F{half_year_row}"].value == (
+            f"=D{half_year_row}+E{half_year_row}"
+        )
+        assert sheet["B6"].value == 602
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_clears_unused_year_total_column(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_with_first_five_months(template_path)
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=1), _entry(day=7), _entry(day=21)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        cell = sheet["I30"]
+        assert cell.value is None
+        assert cell.fill.fill_type is None
+        assert cell.border.left.style is None
+        assert cell.border.right.style is None
+        assert cell.border.top.style is None
+        assert cell.border.bottom.style is None
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_adds_grid_to_generated_helper_totals(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_with_first_five_months(template_path)
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=1), _entry(day=7), _entry(day=21)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+
+        for row_number in (27, 28, 29):
+            for column in range(10, 14):
+                border = sheet.cell(row=row_number, column=column).border
+                assert border.left.style == "thin"
+                assert border.right.style == "thin"
+                assert getattr(border.top, "style", None) == "thin"
+                assert getattr(border.bottom, "style", None) == "thin"
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_clears_unselected_helper_column(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_with_first_five_months(template_path)
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=1), _entry(day=7), _entry(day=21)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        assert sheet["N30"].value is None
+    finally:
+        workbook.close()
+
+
+@pytest.mark.parametrize(
+    ("ending_month", "quarter"),
+    [
+        (3, 1),
+        (6, 2),
+        (9, 3),
+        (12, 4),
+    ],
+)
+def test_export_income_book_builds_each_quarter_from_its_three_months(
+    tmp_path: Path,
+    ending_month: int,
+    quarter: int,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    month_total_rows, original_year_total_row = _create_book_before_quarter_end(
+        template_path,
+        ending_month,
+    )
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=17, month=ending_month)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        sheet = workbook["2026"]
+        new_month_total_row = original_year_total_row + 1
+        quarter_total_row = original_year_total_row + 2
+        inserted_rows = 4 if ending_month == 6 else 3
+        shifted_year_total_row = original_year_total_row + inserted_rows
+        month_total_rows[ending_month] = new_month_total_row
+        quarter_months = range(ending_month - 2, ending_month + 1)
+
+        assert sheet.cell(row=quarter_total_row, column=1).value == (
+            f"Всього {quarter} кв 2026:"
+        )
+
+        for column in TOTAL_FORMULA_COLUMNS:
+            quarter_references = "+".join(
+                f"{column}{month_total_rows[month]}" for month in quarter_months
+            )
+            assert sheet[f"{column}{quarter_total_row}"].value == (
+                f"={quarter_references}"
+            )
+
+            year_references = "+".join(
+                f"{column}{month_total_rows[month]}"
+                for month in range(1, ending_month + 1)
+            )
+            assert sheet[f"{column}{shifted_year_total_row}"].value == (
+                f"={year_references}"
+            )
+
+        assert sheet.cell(row=quarter_total_row, column=9).value is None
+        assert sheet.cell(row=shifted_year_total_row, column=9).value is None
     finally:
         workbook.close()
 

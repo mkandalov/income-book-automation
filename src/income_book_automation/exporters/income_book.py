@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.styles import Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
@@ -20,6 +21,7 @@ FREE_GOODS_COLUMN = 5
 TOTAL_INCOME_COLUMN = 6
 SPECIAL_INCOME_TYPE_COLUMN = 7
 SPECIAL_INCOME_AMOUNT_COLUMN = 8
+RESERVED_BLANK_COLUMN = 9
 MIN_HELPER_COLUMN = 10
 MAX_HELPER_COLUMN = 15
 
@@ -104,6 +106,58 @@ def _totalled_columns(
     )
 
 
+def _selected_helper_columns(helper_columns: HelperColumnMapping) -> set[int]:
+    return {
+        helper_columns.total,
+        helper_columns.checkbox_card,
+        helper_columns.checkbox_cash,
+        helper_columns.bank_income,
+    }
+
+
+def _clear_unselected_helper_values(
+    sheet: Worksheet,
+    row_number: int,
+    helper_columns: HelperColumnMapping,
+) -> None:
+    selected_columns = _selected_helper_columns(helper_columns)
+
+    for column in range(
+        MIN_HELPER_COLUMN,
+        MAX_HELPER_COLUMN + 1,
+    ):
+        if column in selected_columns:
+            continue
+
+        sheet.cell(
+            row=row_number,
+            column=column,
+        ).value = None
+
+
+def _apply_helper_total_grid(
+    sheet: Worksheet,
+    row_number: int,
+    helper_columns: HelperColumnMapping,
+) -> None:
+    thin_side = Side(
+        style="thin",
+        color="FF000000",
+    )
+    full_border = Border(
+        left=thin_side,
+        right=thin_side,
+        top=thin_side,
+        bottom=thin_side,
+    )
+
+    for column in _selected_helper_columns(helper_columns):
+        sheet.cell(
+            row=row_number,
+            column=column,
+        ).border = copy(full_border)
+
+
 def _as_date(value: object) -> date | None:
     if isinstance(value, datetime):
         return value.date()
@@ -139,6 +193,18 @@ def _validate_single_month(
     if len(periods) > 1:
         raise IncomeBookExportError("entries must belong to one calendar month")
     return next(iter(periods), None)
+
+
+def _clear_reserved_blank_cell(
+    sheet: Worksheet,
+    row_number: int,
+) -> None:
+    cell = sheet.cell(
+        row=row_number,
+        column=RESERVED_BLANK_COLUMN,
+    )
+    cell.value = None
+    cell.style = "Normal"
 
 
 def _write_daily_entry(
@@ -189,6 +255,17 @@ def _write_daily_entry(
         column=SPECIAL_INCOME_AMOUNT_COLUMN,
     ).value = zero
 
+    _clear_reserved_blank_cell(
+        sheet,
+        row_number,
+    )
+
+    _clear_unselected_helper_values(
+        sheet,
+        row_number,
+        helper_columns,
+    )
+
     card_letter = get_column_letter(helper_columns.checkbox_card)
     cash_letter = get_column_letter(helper_columns.checkbox_cash)
     bank_letter = get_column_letter(helper_columns.bank_income)
@@ -236,28 +313,102 @@ def _find_label_row(
     raise IncomeBookExportError(f"income-book row not found: {label}")
 
 
+def _month_from_total_label(value: str) -> int | None:
+    normalized = value.replace("\xa0", " ")
+    normalized = normalized.strip().casefold()
+    normalized = normalized.removesuffix(":")
+    words = normalized.split()
+
+    if not words:
+        return None
+
+    for month, month_name in MONTH_NAMES_UKR.items():
+        if words[-1] == month_name:
+            return month
+
+    return None
+
+
 def _index_month_total_rows(
     sheet: Worksheet,
 ) -> dict[int, int]:
     result: dict[int, int] = {}
 
     for row_number in range(1, sheet.max_row + 1):
-        value = sheet.cell(
+        label_cell = sheet.cell(
             row=row_number,
             column=DATE_COLUMN,
-        ).value
+        )
+        value = label_cell.value
 
         if not isinstance(value, str):
             continue
 
-        normalized = value.strip().casefold()
+        month = _month_from_total_label(value)
 
-        for month, month_name in MONTH_NAMES_UKR.items():
-            if normalized == f"всього {month_name}:":
-                result[month] = row_number
-                break
+        if month is None:
+            continue
+
+        income_total = sheet.cell(
+            row=row_number,
+            column=INCOME_COLUMN,
+        ).value
+
+        if income_total is None:
+            continue
+
+        if month in result:
+            month_name = MONTH_NAMES_UKR[month]
+            raise IncomeBookExportError(
+                f"multiple total rows found for month: {month_name}"
+            )
+
+        result[month] = row_number
+        label_cell.value = f"Всього {MONTH_NAMES_UKR[month]}:"
 
     return result
+
+
+def _validate_existing_month_total_rows(
+    rows_by_date: dict[date, int],
+    month_total_rows: dict[int, int],
+    year: int,
+) -> None:
+    months_with_data = {
+        transaction_date.month
+        for transaction_date in rows_by_date
+        if transaction_date.year == year
+    }
+
+    missing_months = sorted(months_with_data - month_total_rows.keys())
+
+    if not missing_months:
+        return
+
+    missing_names = ", ".join(MONTH_NAMES_UKR[month] for month in missing_months)
+
+    raise IncomeBookExportError(
+        f"month total row not found for existing data: {missing_names}"
+    )
+
+
+def _period_month_total_rows(
+    month_total_rows: dict[int, int],
+    months_with_data: set[int],
+    months: range,
+) -> list[int]:
+    period_months = [month for month in months if month in months_with_data]
+
+    missing_months = [month for month in period_months if month not in month_total_rows]
+
+    if missing_months:
+        missing_names = ", ".join(MONTH_NAMES_UKR[month] for month in missing_months)
+
+        raise IncomeBookExportError(
+            f"month total row not found for existing data: {missing_names}"
+        )
+
+    return [month_total_rows[month] for month in period_months]
 
 
 def _copy_row_style(
@@ -301,6 +452,11 @@ def _write_derived_total_columns(
         column=SPECIAL_INCOME_TYPE_COLUMN,
     ).value = Decimal("0.00")
 
+    _clear_reserved_blank_cell(
+        sheet,
+        row_number,
+    )
+
 
 def _write_month_total(
     sheet: Worksheet,
@@ -315,6 +471,12 @@ def _write_month_total(
         column=DATE_COLUMN,
     ).value = f"Всього {MONTH_NAMES_UKR[month]}:"
 
+    _clear_unselected_helper_values(
+        sheet,
+        row_number,
+        helper_columns,
+    )
+
     for column in _totalled_columns(helper_columns):
         letter = get_column_letter(column)
         sheet.cell(
@@ -323,6 +485,12 @@ def _write_month_total(
         ).value = f"=SUM({letter}{first_daily_row}:{letter}{last_daily_row})"
 
     _write_derived_total_columns(sheet, row_number)
+
+    _apply_helper_total_grid(
+        sheet,
+        row_number,
+        helper_columns,
+    )
 
 
 def _write_period_total(
@@ -337,6 +505,12 @@ def _write_period_total(
         column=DATE_COLUMN,
     ).value = label
 
+    _clear_unselected_helper_values(
+        sheet,
+        row_number,
+        helper_columns,
+    )
+
     for column in _totalled_columns(helper_columns):
         letter = get_column_letter(column)
         references = "+".join(f"{letter}{month_row}" for month_row in month_total_rows)
@@ -347,6 +521,12 @@ def _write_period_total(
         ).value = f"={references}"
 
     _write_derived_total_columns(sheet, row_number)
+
+    _apply_helper_total_grid(
+        sheet,
+        row_number,
+        helper_columns,
+    )
 
 
 def _append_new_month(
@@ -367,6 +547,18 @@ def _append_new_month(
     data_style_row = rows_by_date[latest_existing_date]
 
     month_total_rows = _index_month_total_rows(sheet)
+
+    _validate_existing_month_total_rows(
+        rows_by_date,
+        month_total_rows,
+        year,
+    )
+
+    months_with_data = {
+        transaction_date.month
+        for transaction_date in rows_by_date
+        if transaction_date.year == year
+    }
 
     if not month_total_rows:
         raise IncomeBookExportError("previous month total row not found")
@@ -409,17 +601,18 @@ def _append_new_month(
     )
 
     month_total_rows[month] = month_total_row
+    months_with_data.add(month)
     next_row = month_total_row + 1
 
     if month % 3 == 0:
         quarter = (month - 1) // 3 + 1
         quarter_start = month - 2
 
-        quarter_month_rows = [
-            month_total_rows[current_month]
-            for current_month in range(quarter_start, month + 1)
-            if current_month in month_total_rows
-        ]
+        quarter_month_rows = _period_month_total_rows(
+            month_total_rows,
+            months_with_data,
+            range(quarter_start, month + 1),
+        )
 
         _copy_row_style(sheet, total_style_row, next_row)
         _write_period_total(
@@ -432,11 +625,11 @@ def _append_new_month(
         next_row += 1
 
     if month == 6:
-        half_year_rows = [
-            month_total_rows[current_month]
-            for current_month in range(1, 7)
-            if current_month in month_total_rows
-        ]
+        half_year_rows = _period_month_total_rows(
+            month_total_rows,
+            months_with_data,
+            range(1, 7),
+        )
 
         _copy_row_style(sheet, total_style_row, next_row)
         _write_period_total(
@@ -449,11 +642,11 @@ def _append_new_month(
 
     shifted_year_total_row = year_total_row + inserted_rows
 
-    year_month_rows = [
-        month_total_rows[current_month]
-        for current_month in range(1, month + 1)
-        if current_month in month_total_rows
-    ]
+    year_month_rows = _period_month_total_rows(
+        month_total_rows,
+        months_with_data,
+        range(1, month + 1),
+    )
 
     _write_period_total(
         sheet,

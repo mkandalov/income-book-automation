@@ -7,6 +7,7 @@ import pytest
 from fastapi import UploadFile
 from pytest import MonkeyPatch
 
+from income_book_automation.config import ClientConfigValidationError
 from income_book_automation.exporters.income_book import HelperColumnMapping
 from income_book_automation.models import (
     BankName,
@@ -109,6 +110,7 @@ def test_build_review_transaction_rows_explains_identity_conflict() -> None:
 
 def _validate_request(
     *,
+    client_id: str = "client-test-001",
     banks: list[BankName] | None = None,
     bank_statements: list[UploadFile] | None = None,
     account_numbers: list[str] | None = None,
@@ -121,7 +123,7 @@ def _validate_request(
     selected_accounts = [""] if account_numbers is None else account_numbers
 
     return processing._validate_request(
-        config_file=_upload("client.yaml"),
+        client_id=client_id,
         banks=selected_banks,
         bank_statements=selected_statements,
         account_numbers=selected_accounts,
@@ -129,22 +131,6 @@ def _validate_request(
         template_file=_upload("template.xlsx"),
         sheet_name=sheet_name,
     )
-
-
-@pytest.mark.parametrize(
-    "filename",
-    ["client.yaml", "client.yml", "CLIENT.YML"],
-)
-def test_validate_upload_accepts_yaml_extensions(filename: str) -> None:
-    upload = _upload(filename)
-
-    processing._validate_upload(
-        upload,
-        label="Профіль клієнта",
-        allowed_extensions=processing.YAML_EXTENSIONS,
-    )
-
-    assert upload.file.tell() == 0
 
 
 def test_validate_upload_rejects_wrong_extension() -> None:
@@ -204,6 +190,14 @@ def test_validate_request_rejects_too_many_bank_statements() -> None:
             ],
             account_numbers=[""] * statement_count,
         )
+
+
+def test_validate_request_requires_selected_client() -> None:
+    with pytest.raises(
+        processing.UploadInputError,
+        match="Оберіть ФОПа зі списку",
+    ):
+        _validate_request(client_id="   ")
 
 
 def test_validate_request_rejects_mismatched_statement_fields() -> None:
@@ -276,13 +270,21 @@ def test_generate_from_uploads_forwards_helper_columns(
         bank_income=14,
     )
     forwarded_helper_columns: list[HelperColumnMapping | None] = []
-    forwarded_filenames: list[tuple[str, str, str, str]] = []
+    forwarded_filenames: list[tuple[str, str, str]] = []
+    forwarded_client_ids: list[tuple[processing.Path, str]] = []
 
-    def fake_load_client_profile(path: processing.Path) -> object:
-        forwarded_filenames.append((path.name, "", "", ""))
+    def fake_load_client_profile_by_id(
+        directory: processing.Path,
+        client_id: str,
+    ) -> object:
+        forwarded_client_ids.append((directory, client_id))
         return object()
 
-    monkeypatch.setattr(processing, "load_client_profile", fake_load_client_profile)
+    monkeypatch.setattr(
+        processing,
+        "load_client_profile_by_id",
+        fake_load_client_profile_by_id,
+    )
 
     def fake_run_income_book_pipeline(**kwargs: object) -> SimpleNamespace:
         forwarded_helper_columns.append(kwargs["helper_columns"])
@@ -295,11 +297,12 @@ def test_generate_from_uploads_forwards_helper_columns(
         assert isinstance(checkbox_path, processing.Path)
         assert isinstance(template_path, processing.Path)
 
-        forwarded_filenames[0] = (
-            forwarded_filenames[0][0],
-            bank_statements[0].path.name,
-            checkbox_path.name,
-            template_path.name,
+        forwarded_filenames.append(
+            (
+                bank_statements[0].path.name,
+                checkbox_path.name,
+                template_path.name,
+            )
         )
         output_path.write_bytes(b"generated-workbook")
 
@@ -326,7 +329,8 @@ def test_generate_from_uploads_forwards_helper_columns(
     )
 
     result = processing.generate_income_book_from_uploads(
-        config_file=_upload("client-original.yaml"),
+        client_id="client-test-001",
+        client_config_directory=processing.Path("/private/client-configs"),
         banks=[BankName.PUMB],
         bank_statements=[_upload("bank-original.csv")],
         account_numbers=[""],
@@ -341,9 +345,11 @@ def test_generate_from_uploads_forwards_helper_columns(
     assert result.checkbox_warnings[0].result == Decimal("-3000.00")
     assert result.no_income is True
     assert forwarded_helper_columns == [helper_columns]
+    assert forwarded_client_ids == [
+        (processing.Path("/private/client-configs"), "client-test-001")
+    ]
     assert forwarded_filenames == [
         (
-            "client-original.yaml",
             "bank-original.csv",
             "ZReport-original.xlsx",
             "income-book-original.xlsx",
@@ -363,24 +369,28 @@ def test_upload_filename_removes_windows_directories() -> None:
     )
 
 
-def test_config_error_names_profile_field_and_original_file(
+def test_generate_rejects_unknown_selected_client(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    def fake_load_client_profile(_path: processing.Path) -> object:
-        raise processing.ClientConfigError("synthetic config error")
+    def fake_load_client_profile_by_id(
+        _directory: processing.Path,
+        _client_id: str,
+    ) -> object:
+        raise ClientConfigValidationError("unknown client")
 
     monkeypatch.setattr(
         processing,
-        "load_client_profile",
-        fake_load_client_profile,
+        "load_client_profile_by_id",
+        fake_load_client_profile_by_id,
     )
 
     with pytest.raises(
-        processing.ClientConfigError,
-        match="Профіль клієнта «wrong-client.yaml»",
+        ClientConfigValidationError,
+        match="unknown client",
     ):
         processing.generate_income_book_from_uploads(
-            config_file=_upload("wrong-client.yaml"),
+            client_id="client-unknown",
+            client_config_directory=processing.Path("/private/client-configs"),
             banks=[BankName.PUMB],
             bank_statements=[_upload("bank.csv")],
             account_numbers=[""],
@@ -395,8 +405,8 @@ def test_export_error_names_template_field_and_original_file(
 ) -> None:
     monkeypatch.setattr(
         processing,
-        "load_client_profile",
-        lambda _path: object(),
+        "load_client_profile_by_id",
+        lambda _directory, _client_id: object(),
     )
 
     def fake_run_income_book_pipeline(**_kwargs: object) -> None:
@@ -413,7 +423,8 @@ def test_export_error_names_template_field_and_original_file(
         match="шаблон книги доходів «wrong-income-book.xlsx»",
     ):
         processing.generate_income_book_from_uploads(
-            config_file=_upload("client.yaml"),
+            client_id="client-test-001",
+            client_config_directory=processing.Path("/private/client-configs"),
             banks=[BankName.PUMB],
             bank_statements=[_upload("bank.csv")],
             account_numbers=[""],

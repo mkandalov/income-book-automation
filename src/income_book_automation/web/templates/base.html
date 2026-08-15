@@ -246,6 +246,7 @@
         }
 
         input[type="text"],
+        input[type="search"],
         select {
             width: 100%;
             height: 48px;
@@ -258,8 +259,245 @@
         }
 
         input[type="text"],
+        input[type="search"],
         select {
             padding: 0 13px;
+        }
+
+        input[type="search"]::-webkit-search-cancel-button {
+            appearance: none;
+        }
+
+        .client-combobox {
+            position: relative;
+        }
+
+        .client-combobox__control {
+            position: relative;
+            display: flex;
+            align-items: center;
+            min-height: 54px;
+            border: 1px solid var(--line);
+            border-radius: 13px;
+            background: var(--white);
+            transition: border-color 150ms ease, box-shadow 150ms ease;
+        }
+
+        .client-combobox__control:focus-within,
+        .client-combobox[data-open="true"] .client-combobox__control {
+            border-color: var(--teal-600);
+            box-shadow: 0 0 0 4px rgba(31, 129, 122, 0.09);
+        }
+
+        .client-combobox.has-error .client-combobox__control {
+            border-color: rgba(174, 62, 54, 0.55);
+            box-shadow: 0 0 0 3px rgba(174, 62, 54, 0.08);
+        }
+
+        .client-combobox__search-icon {
+            display: grid;
+            flex: 0 0 46px;
+            place-items: center;
+            color: var(--teal-700);
+        }
+
+        .client-combobox__search-icon svg {
+            width: 20px;
+            height: 20px;
+            fill: none;
+            stroke: currentColor;
+            stroke-linecap: round;
+            stroke-width: 1.8;
+        }
+
+        .client-combobox__input {
+            min-width: 0;
+            height: 52px !important;
+            min-height: 52px !important;
+            padding: 0 !important;
+            border: 0 !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            background: transparent !important;
+            font-size: 15px;
+            font-weight: 650;
+        }
+
+        .client-combobox__input::placeholder {
+            color: #879699;
+            font-weight: 500;
+        }
+
+        .client-combobox__input:focus-visible {
+            outline: none;
+            outline-offset: 0;
+        }
+
+        .client-combobox__input:disabled {
+            cursor: not-allowed;
+        }
+
+        .client-combobox__toggle {
+            display: grid;
+            flex: 0 0 46px;
+            height: 42px;
+            margin: 0 5px;
+            place-items: center;
+            border: 0;
+            border-radius: 9px;
+            color: var(--ink-500);
+            background: transparent;
+        }
+
+        .client-combobox__toggle:hover:not(:disabled) {
+            color: var(--teal-700);
+            background: var(--teal-50);
+        }
+
+        .client-combobox__toggle svg {
+            width: 20px;
+            height: 20px;
+            fill: none;
+            stroke: currentColor;
+            stroke-linecap: round;
+            stroke-linejoin: round;
+            stroke-width: 1.8;
+            transition: transform 150ms ease;
+        }
+
+        .client-combobox[data-open="true"] .client-combobox__toggle svg {
+            transform: rotate(180deg);
+        }
+
+        .client-combobox__panel {
+            position: absolute;
+            z-index: 20;
+            top: calc(100% + 8px);
+            right: 0;
+            left: 0;
+            overflow: hidden;
+            border: 1px solid rgba(27, 66, 72, 0.16);
+            border-radius: 14px;
+            background: var(--white);
+            box-shadow: 0 18px 46px rgba(16, 42, 47, 0.16);
+        }
+
+        .client-combobox__panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 11px 14px;
+            border-bottom: 1px solid var(--line);
+            color: var(--ink-500);
+            background: var(--sand-50);
+            font-size: 11px;
+            font-weight: 750;
+            letter-spacing: 0.02em;
+        }
+
+        .client-combobox__panel-header span:last-child {
+            min-width: 26px;
+            padding: 3px 7px;
+            border-radius: 999px;
+            color: var(--teal-700);
+            background: var(--teal-100);
+            text-align: center;
+        }
+
+        .client-combobox__options {
+            max-height: 310px;
+            padding: 6px;
+            overflow-y: auto;
+            overscroll-behavior: contain;
+            scrollbar-color: rgba(23, 109, 104, 0.35) transparent;
+            scrollbar-width: thin;
+        }
+
+        .client-option {
+            display: grid;
+            align-items: center;
+            grid-template-columns: 42px minmax(0, 1fr) 24px;
+            gap: 11px;
+            width: 100%;
+            min-height: 52px;
+            padding: 7px 10px;
+            border: 0;
+            border-radius: 10px;
+            color: var(--navy-950);
+            background: transparent;
+            text-align: left;
+        }
+
+        .client-option:hover,
+        .client-option.is-active {
+            background: var(--teal-50);
+        }
+
+        .client-option[hidden] {
+            display: none;
+        }
+
+        .client-option[aria-selected="true"] {
+            background: var(--teal-100);
+        }
+
+        .client-option__badge {
+            display: grid;
+            width: 42px;
+            height: 34px;
+            place-items: center;
+            border-radius: 9px;
+            color: var(--teal-700);
+            background: var(--teal-100);
+            font-size: 10px;
+            font-weight: 900;
+            letter-spacing: 0.04em;
+        }
+
+        .client-option[aria-selected="true"] .client-option__badge {
+            color: var(--white);
+            background: var(--teal-700);
+        }
+
+        .client-option__name {
+            min-width: 0;
+            overflow: hidden;
+            font-size: 13px;
+            font-weight: 700;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .client-option__check {
+            color: var(--teal-700);
+            font-size: 15px;
+            font-weight: 900;
+            opacity: 0;
+        }
+
+        .client-option[aria-selected="true"] .client-option__check {
+            opacity: 1;
+        }
+
+        .client-combobox__empty {
+            margin: 0;
+            padding: 28px 18px;
+            color: var(--ink-500);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        .client-validation-message,
+        .client-catalog-error {
+            color: var(--danger);
+            font-size: 12px;
+            font-weight: 750;
+        }
+
+        .client-catalog-error {
+            padding: 10px 12px;
+            border-radius: 9px;
+            background: var(--danger-soft);
         }
 
         .file-control {
