@@ -1,0 +1,18 @@
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
+https://{$INCOME_BOOK_HOST:localhost} {
+	tls internal
+
+	header {
+		-Server
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+	}
+
+	reverse_proxy app:8000
+}
