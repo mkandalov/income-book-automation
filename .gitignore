@@ -18,6 +18,9 @@ outputs/
 *.xls
 *.xlsx
 *.zip
+*.key
+*.pem
+caddy-root.crt
 
 .DS_Store
 *.log

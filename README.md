@@ -2,85 +2,118 @@
 
 [![CI](https://github.com/mkandalov/income-book-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/mkandalov/income-book-automation/actions/workflows/ci.yml)
 
-A production-oriented Python application that prepares Ukrainian income-book
-workbooks from Checkbox Z-reports and bank statements. It replaces a repetitive
-accounting workflow with deterministic parsing, validation, transaction
-classification, daily aggregation, and Excel generation.
+Income Book Automation is a production-oriented Python service that prepares
+Ukrainian income-book workbooks from Checkbox Z-reports and bank statements. It
+turns a repetitive accounting workflow into a deterministic pipeline with
+strict input validation, transaction classification, daily aggregation, manual
+review gates, and preservation of the existing Excel template.
 
 The project is based on a real workflow used by an accounting company serving
-restaurants. All examples and automated tests use synthetic data; client files
-and personal identifiers remain outside the repository.
+restaurants. Client documents, personal identifiers, and production
+configuration remain outside the repository. Tests and examples use synthetic
+data only.
 
 ## The problem
 
-Accountants receive revenue data from several independent sources:
+Accountants need to combine three sources:
 
-- Checkbox Z-reports with card, cash, and refund amounts;
-- bank statements exported by different banks in incompatible CSV layouts;
-- an existing income-book workbook whose structure and formatting must be
-  preserved.
+- a Checkbox Z-report containing card, cash, and refund values;
+- one or more bank statements exported in bank-specific CSV layouts;
+- an existing income-book workbook whose official structure and formatting
+  must be preserved.
 
-Combining these sources manually is slow and error-prone. This application
-normalizes them into one domain model, applies explicit accounting rules, and
-writes the resulting daily values into the existing workbook template.
+Manual processing is slow and makes it easy to count a refund, an own-account
+transfer, a duplicate transaction, or a foreign-currency payment incorrectly.
+This application validates the source files, normalizes every bank into one
+domain model, applies explicit accounting rules, and produces a reviewable
+`.xlsx` result.
+
+## Employee workflow
+
+The web interface guides an employee through one monthly processing run:
+
+1. Search for and select a client from the server-managed client catalog.
+2. Add between one and ten CSV statements and select the corresponding bank for
+   each file. A Monobank statement also requires its statement IBAN.
+3. Upload one Checkbox `.xlsx` Z-report and one `.xlsx` income-book template.
+4. Select the worksheet, output filename, and four helper-column positions.
+5. Generate and download the result.
+
+If a credit cannot be classified safely, the application does not generate a
+workbook. Instead, it displays a manual-review page with the original filename,
+bank, CSV row, transaction details, and the missing or conflicting fields.
+
+Negative daily Checkbox results are accepted and included, but the downloaded
+workbook is accompanied by a visible warning. If no income is found, the
+unchanged template is downloaded with a separate warning.
 
 ## Current features
 
-- FastAPI web interface with Ukrainian-language validation messages.
-- Typer command-line interface for local and scripted use.
-- Checkbox `.xlsx` Z-report parsing by header name, including reordered columns.
-- CSV parsers for PUMB, PrivatBank, Monobank, and A-Bank.
-- Processing of multiple bank statements, including different banks, in one run.
-- Duplicate-file detection and transaction deduplication across overlapping
-  statements.
-- Deterministic classification of income, own-account transfers, excluded
-  transactions, and transactions requiring manual review.
-- Client-specific matching by tax ID, IBAN, legal name, and configured aliases.
-- Ukrainian IBAN format and ISO 13616 checksum validation for statement and
-  configured own accounts.
-- Fail-closed validation for non-UAH statements, malformed CSV rows, incomplete
-  credits, and conflicting counterparty identity data.
-- Daily aggregation of Checkbox and eligible bank income using `Decimal`.
-- Generation or update of an `.xlsx` income book without overwriting the source
-  template.
-- Configurable helper-column positions from J through O.
-- Automatic monthly, quarterly, half-year, and year-to-date total rows when a new
-  month is appended.
-- Original upload filenames in user-facing validation errors.
-- File-type, file-size, worksheet, and workbook-structure validation.
-- Automated tests and GitHub Actions continuous integration.
+- FastAPI web application with a Ukrainian-language interface and errors.
+- Searchable client selector backed by private YAML profiles on the server.
+- Typer CLI for local and scripted processing.
+- Checkbox `.xlsx` Z-report parsing by normalized header name, including
+  reordered columns and formula-cache validation.
+- Strict CSV parsers for PUMB, PrivatBank, Monobank, and A-Bank.
+- Multiple statements from one or several supported banks in a single run.
+- File-level duplicate detection and transaction-level deduplication for
+  overlapping statements.
+- Deterministic categories: income, own transfer, excluded, and manual review.
+- Client matching by tax ID, valid Ukrainian IBAN, exact normalized legal name,
+  and configured aliases.
+- Ukrainian IBAN format and ISO 13616 checksum validation.
+- Fail-closed handling of malformed rows, missing financial data, mixed months,
+  unsupported currencies, and conflicting counterparty identity.
+- Daily aggregation with `Decimal` rather than binary floating-point values.
+- `.xlsx` template update without overwriting the uploaded source file.
+- Configurable helper columns from J through O.
+- Monthly, quarterly, first-half-year, and year-to-date totals built from actual
+  detected rows rather than fixed row offsets.
+- Original upload filenames in user-facing errors.
+- Client-profile generator for converting an administrative Excel register into
+  validated private YAML files.
+- Docker Compose packaging with Caddy as an internal HTTPS reverse proxy.
+- GitHub Actions CI and a comprehensive automated test suite.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A["Checkbox Z-report XLSX"] --> D["Parsers and validation"]
-    B["One or more bank CSV files"] --> D
-    C["Client YAML profile"] --> E["Transaction classification"]
-    D --> F["Normalized domain models"]
-    F --> G["Deduplication"]
-    G --> E
-    E --> H["Daily aggregation and merge"]
-    H --> I["Excel exporter"]
-    J["Income-book XLSX template"] --> I
-    I --> K["Generated income book"]
+    U["Employee browser"] -->|HTTPS| C["Caddy reverse proxy"]
+    C --> W["FastAPI web application"]
+    Y["Private client YAML catalog"] --> W
+    W --> T["Isolated temporary workspace"]
+    T --> P["Checkbox and bank parsers"]
+    P --> N["Validated domain models"]
+    N --> D["Deduplication"]
+    D --> R["Classification rules"]
+    R --> V{"Manual review required?"}
+    V -->|yes| Q["Review page; export blocked"]
+    V -->|no| A["Daily aggregation"]
+    A --> E["Excel exporter"]
+    X["Income-book XLSX template"] --> E
+    E --> O["Downloaded XLSX result"]
 ```
 
-The processing rules are deliberately separated from file parsing and delivery
-interfaces. The same pipeline is therefore used by both the CLI and the web
-application.
+Parsing, domain rules, orchestration, Excel export, CLI delivery, and web
+delivery are separate modules. Both the CLI and web application call the same
+pipeline, so accounting decisions do not depend on the interface used.
 
 ## Supported inputs
 
-| Input | Supported format | Notes |
+| Input | Format | Important details |
 | --- | --- | --- |
-| Checkbox | `.xlsx` | Checkbox Z-report with the required revenue and refund headers |
-| PUMB | `.csv` | Statement export containing the PUMB transaction columns |
-| PrivatBank | `.csv` | Signed transaction amounts are mapped to debit or credit |
-| Monobank | `.csv` | The statement IBAN must be supplied separately |
-| A-Bank | `.csv` | Account and currency are read from the metadata row |
-| Client profile | `.yaml` or `.yml` | Identity and optional own-account/name aliases |
-| Income-book template | `.xlsx` | Existing workbook and worksheet structure are preserved |
+| Checkbox | `.xlsx` | Z-report containing the required revenue and refund headers |
+| PUMB | `.csv` | Semicolon-delimited CP1251 transaction export |
+| PrivatBank | `.csv` | Semicolon-delimited CP1251 export with signed amounts |
+| Monobank | `.csv` | Semicolon-delimited UTF-8 export; statement IBAN is entered separately |
+| A-Bank | `.csv` | Comma-delimited UTF-8 export; account and currency come from metadata |
+| Client profile | `.yaml` / `.yml` | Stored privately on the server, not uploaded by employees |
+| Income-book template | `.xlsx` | Existing workbook whose worksheet and styles are preserved |
+| Generated result | `.xlsx` | New file; the uploaded template is never overwritten |
+
+Every bank transaction must be in UAH. One run may contain only one calendar
+month across all bank statements and the Checkbox report.
 
 ## Installation
 
@@ -93,30 +126,48 @@ cd income-book-automation
 uv sync --all-groups
 ```
 
-## Run the web application
+For the web interface, create the private catalog directory and copy the
+synthetic example profile:
+
+```bash
+mkdir -p private_data/clients
+cp config/clients/client.example.yaml private_data/clients/
+```
+
+## Run the web application locally
 
 ```bash
 uv run uvicorn income_book_automation.web.app:app --reload
 ```
 
-Open [http://127.0.0.1:8000](http://127.0.0.1:8000) in a browser. The health
-endpoint is available at [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health).
+Open [http://127.0.0.1:8000](http://127.0.0.1:8000). The health endpoint is
+available at
+[http://127.0.0.1:8000/health](http://127.0.0.1:8000/health).
 
-One web request accepts:
+Uploads are copied into a request-specific temporary directory and removed when
+processing finishes. The generated workbook is returned directly as a download
+and is not stored by the web application.
 
-1. a private client YAML profile;
-2. between one and ten bank statement CSV files with a selected bank for each;
-3. one Checkbox Z-report workbook;
-4. one income-book template and its worksheet name;
-5. optional helper-column positions and a custom output filename.
+## Run with Docker and HTTPS
 
-The generated workbook is returned as a download. Uploaded files are processed
-inside a temporary directory and are removed when the request finishes.
+```bash
+cp .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+The local Docker URL is `https://localhost`. Caddy terminates HTTPS and proxies
+requests to FastAPI. Port 8000 is bound to `127.0.0.1` for diagnostics only and
+cannot be used by another computer to bypass HTTPS.
+
+Production configuration, internal certificate installation, updates,
+diagnostics, and rollback rules are documented in
+[`docs/deployment.md`](docs/deployment.md).
 
 ## Client configuration
 
-Client profiles are intentionally kept outside version control. A synthetic
-example is available at `config/clients/client.example.yaml`:
+Client profiles are deliberately kept outside Git and the Docker image. A
+synthetic example is available at `config/clients/client.example.yaml`:
 
 ```yaml
 client_id: "client-001"
@@ -132,21 +183,39 @@ name_aliases:
   - "FOP JOHN EXAMPLE"
 ```
 
-`own_accounts` and `name_aliases` are optional. Providing them improves detection
-of transfers between the client's own accounts. The example uses synthetic
-English names for readability; production values should exactly match the names
-and identifiers used in the client's bank statements.
+`own_accounts` and `name_aliases` are optional. Adding known accounts and exact
+bank-statement name variants improves own-transfer detection. The web catalog
+exposes only a display name and an opaque derived selector ID; the tax ID and
+internal profile ID are not embedded in the page.
+
+An administrator can generate profiles from an Excel register containing a
+full-name column (`ПІБ`, `ФІО`, or `ФИО`) and a tax-ID column (`ІПН`, `ИНН`, or
+`РНОКПП`):
+
+```bash
+uv run generate-client-profiles \
+  --input /path/to/client-register.xlsx \
+  --output /path/to/empty/client-directory \
+  --dry-run
+
+uv run generate-client-profiles \
+  --input /path/to/client-register.xlsx \
+  --output /path/to/empty/client-directory
+```
+
+The generator validates every row and duplicate tax IDs before writing any
+files. It refuses to write into a directory that already contains YAML profiles.
 
 ## CLI usage
 
-Display all commands:
+Display the available commands:
 
 ```bash
 uv run income-book --help
 uv run income-book generate --help
 ```
 
-Generate a workbook from two statements:
+Generate a workbook from two bank statements:
 
 ```bash
 uv run income-book generate \
@@ -162,46 +231,65 @@ uv run income-book generate \
 ```
 
 The order of `--bank` values must match the order of `--bank-statement` values.
-Add `--mono-account` once for every Monobank statement.
+Provide one `--mono-account` value for every Monobank statement, in Monobank
+statement order.
 
 ## Business-rule summary
 
-- Checkbox card and cash income are calculated after their corresponding
-  refunds.
-- Debit transactions never contribute to income.
-- Incoming transfers from the client's own IBAN, tax ID, legal name, or alias
-  are not treated as income.
-- Configured refund, returnable-financial-assistance, and currency-sale payment
-  purposes are excluded.
-- Credits without enough counterparty information are marked for manual review.
-- A known own IBAN or client name paired with a different tax ID is marked for
-  manual review instead of being silently excluded.
-- Only UAH statements are accepted; other currencies stop the run.
+- Checkbox card and cash income equal revenue minus the corresponding refund.
+- A negative daily Checkbox net value is retained and reported as a warning.
+- Debit bank transactions are excluded before credit-classification rules run.
+- A credit missing a document number, counterparty, counterparty account,
+  counterparty tax ID, or payment purpose is sent to manual review and blocks
+  export.
+- Incoming transfers identified as the client's own funds by account, tax ID,
+  legal name, or exact alias are not income.
+- Conflicting client identifiers are sent to manual review rather than silently
+  included or excluded.
+- Refunds, returnable financial assistance, and currency-sale proceeds are
+  excluded by normalized payment-purpose rules.
 - Only transactions classified as income contribute to daily bank totals.
-- Dates whose combined Checkbox and bank income is zero are omitted.
+- A date is omitted only when card net, cash net, and eligible bank income are
+  all individually zero. Offsetting positive and negative components are kept.
+- If no daily entries remain, the application returns an unchanged copy of the
+  template and shows a warning.
 
-See [`docs/rules.md`](docs/rules.md) for the complete rule order, spreadsheet
-mapping, deduplication key, and current limitations.
+See [`docs/rules.md`](docs/rules.md) for the complete order, validation policy,
+deduplication key, Excel mapping, period-total logic, and error behavior.
 
 ## Excel output
 
-The exporter processes one calendar month per run. It writes stable values into
-the official income columns and uses formulas only where the template expects
-derived values. The default helper mapping is:
+The exporter handles one calendar month per run. The official columns are
+independent from the removable helper columns:
 
-| Column | Value |
+| Column | Written value |
 | --- | --- |
-| J | Total from all automated sources |
-| K | Checkbox card income |
-| L | Checkbox cash income |
+| A | Date |
+| B | Stable numeric total income |
+| C | `0.00` in the current MVP |
+| D | Formula `B - C` |
+| E | `0.00` in the current MVP |
+| F | Formula `D + E` |
+| G | `0.00` in the current MVP |
+| H | `0.00` in the current MVP |
+| I | Cleared reserved column |
+
+Default helper mapping:
+
+| Column | Written value |
+| --- | --- |
+| J | Formula: Checkbox card + Checkbox cash + eligible bank income |
+| K | Checkbox card net |
+| L | Checkbox cash net |
 | M | Eligible bank income |
 
-The four helper columns can be assigned independently to any unique columns from
-J through O in the web interface.
+The four helper values may be assigned to any four unique columns from J through
+O. Column B receives a numeric value, not a reference to J, so removing helper
+columns does not break the official income amount.
 
-When the source template does not yet contain the requested later month, the
-exporter copies the existing row style, appends daily rows, adds the required
-period totals, and recalculates the year-to-date row.
+When appending a later month, summary formulas reference the actual discovered
+monthly-total rows. They never rely on a fixed number of day rows, which is
+important because zero-income days are omitted.
 
 ## Quality checks
 
@@ -209,58 +297,73 @@ period totals, and recalculates the year-to-date row.
 uv run ruff check src tests
 uv run ruff format --check src tests
 uv run pytest -q
+docker compose config --quiet
 ```
 
-The test suite contains more than 200 automated tests covering parsers,
-validation, domain models, classification rules, deduplication, aggregation,
-Excel export, CLI behavior, web uploads, error handling, and downloadable
-responses.
+The suite currently contains 250 automated tests covering parsers, malformed
+inputs, validation, domain models, IBAN checks, classification, deduplication,
+aggregation, Excel export, client configuration, CLI behavior, web requests,
+review pages, warnings, and downloads.
 
-GitHub Actions runs the same checks automatically for every pull request to
-`main` and every push to `main`.
+GitHub Actions executes locked dependency installation, Ruff checks, formatting
+verification, and the complete test suite for every pull request to `main` and
+every push to `main`.
 
 ## Project structure
 
 ```text
 src/income_book_automation/
-├── parsers/       # Checkbox and bank-specific adapters
-├── rules/         # Classification, aggregation, and deduplication
-├── exporters/     # Income-book XLSX generation
-├── validation/    # Reconciliation checks
-├── web/           # FastAPI routes, upload handling, and templates
-├── models.py      # Validated domain models
-├── iban.py        # Ukrainian IBAN normalization and checksum validation
-├── pipeline.py    # End-to-end orchestration
-├── config.py      # Private YAML profile loading
-└── cli.py         # Typer commands
+├── parsers/                  # Checkbox and bank-specific adapters
+├── rules/                    # Classification, deduplication, aggregation
+├── exporters/                # Income-book XLSX generation
+├── validation/               # Reconciliation checks
+├── web/                      # FastAPI routes, processing, templates, CSS
+├── models.py                 # Validated domain models
+├── iban.py                   # Ukrainian IBAN validation
+├── pipeline.py               # End-to-end orchestration
+├── config.py                 # Private YAML catalog loading
+├── client_profile_generator.py
+└── cli.py
 ```
 
-## Privacy and safety
+## Privacy and security
 
-- Bank statements, Checkbox reports, income books, generated outputs, private
-  profiles, and environment files are excluded by `.gitignore`.
-- Tests generate temporary files from synthetic values and do not depend on
-  real client documents.
+- Real bank statements, Checkbox reports, templates, outputs, client profiles,
+  environment files, and certificates are excluded from Git.
+- Tests use temporary synthetic documents and identifiers.
+- Client profiles are mounted read-only into the application container.
 - The original workbook is never used as the output path.
-- Ambiguous transactions are separated for manual review rather than silently
-  included as income.
+- Uploaded files live only in an isolated temporary request directory.
+- Caddy encrypts internal traffic with HTTPS; FastAPI is not directly exposed
+  to the network on port 8000.
+- Ambiguous credits fail closed and require human review.
+
+HTTPS protects traffic but does not authenticate a person. The current internal
+deployment must therefore also be restricted by network/firewall policy until
+application authentication and authorization are added.
 
 ## Current limitations
 
 - This is an accounting-assistance tool, not a replacement for professional
-  review or tax advice.
-- A single run may contain data from only one calendar month.
+  accounting review or tax advice.
+- A run may contain data from only one calendar month.
 - Bank statements must be CSV; Checkbox reports and templates must be XLSX.
-- Only UAH bank transactions are supported. EUR, USD, and other currencies stop
-  processing; currency conversion is not implemented.
-- Output accuracy depends on the bank export layout and the configured client
-  identity data.
+- Only UAH bank transactions are supported.
+- Client creation and removal are administrative YAML workflows; there is no
+  client-management web page yet.
+- The web application has no user login or role model yet.
+- The generated workbook contains formulas, but `openpyxl` does not calculate
+  them. Microsoft Excel may show blank cached formula values in Protected View
+  until the employee enables editing and Excel recalculates the workbook.
+- The result contains the prepared workbook but not a separate downloadable
+  audit report for every included and excluded transaction.
 
 ## Roadmap
 
-- Add a sanitized demo dataset and interface screenshot.
+- Add authentication, authorization, and an organization-managed access policy.
+- Add an administrator workflow for creating, updating, and removing clients.
 - Produce a downloadable audit report for included, excluded, duplicate, and
   manual-review transactions.
-- Package the service with Docker.
-- Deploy a demonstration environment and add continuous delivery.
-- Add authentication and an organization-managed client allowlist.
+- Add a sanitized demo dataset and interface screenshots.
+- Add automated continuous delivery after the manual production-update process
+  has been proven stable.

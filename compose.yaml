@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "${INCOME_BOOK_BIND_ADDRESS:-127.0.0.1}:${INCOME_BOOK_PORT:-8000}:8000"
+      - "127.0.0.1:${INCOME_BOOK_PORT:-8000}:8000"
     environment:
       INCOME_BOOK_CLIENTS_DIR: /data/clients
     volumes:
@@ -39,3 +39,43 @@ services:
     cap_drop:
       - ALL
     stop_grace_period: 30s
+
+  caddy:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    init: true
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      INCOME_BOOK_HOST: ${INCOME_BOOK_HOST:-localhost}
+    volumes:
+      - type: bind
+        source: ./Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: volume
+        source: caddy_data
+        target: /data
+      - type: volume
+        source: caddy_config
+        target: /config
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          wget -q --spider "https://$${INCOME_BOOK_HOST}/health"
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+
+volumes:
+  caddy_data:
+  caddy_config:

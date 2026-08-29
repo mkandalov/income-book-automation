@@ -21,5 +21,8 @@ tests
 *.xls
 *.xlsx
 *.zip
+*.key
+*.pem
+caddy-root.crt
 *.log
 .DS_Store
