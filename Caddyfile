@@ -1,4 +1,6 @@
 {
+	default_sni {$INCOME_BOOK_HOST:localhost}
+
 	servers {
 		protocols h1 h2
 	}
