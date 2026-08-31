@@ -9,7 +9,7 @@ services:
     restart: unless-stopped
     init: true
     ports:
-      - "127.0.0.1:${INCOME_BOOK_PORT:-8000}:8000"
+      - "${INCOME_BOOK_BIND_ADDRESS:-127.0.0.1}:${INCOME_BOOK_PORT:-8000}:8000"
     environment:
       INCOME_BOOK_CLIENTS_DIR: /data/clients
     volumes:
@@ -41,6 +41,8 @@ services:
     stop_grace_period: 30s
 
   caddy:
+    profiles:
+      - internal-https
     image: caddy:2.11.4-alpine
     restart: unless-stopped
     init: true

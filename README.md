@@ -72,15 +72,16 @@ unchanged template is downloaded with a separate warning.
 - Original upload filenames in user-facing errors.
 - Client-profile generator for converting an administrative Excel register into
   validated private YAML files.
-- Docker Compose packaging with Caddy as an internal HTTPS reverse proxy.
+- Docker Compose packaging for infrastructure reverse proxies, with an
+  optional Caddy profile for standalone internal HTTPS.
 - GitHub Actions CI and a comprehensive automated test suite.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    U["Employee browser"] -->|HTTPS| C["Caddy reverse proxy"]
-    C --> W["FastAPI web application"]
+    U["Employee browser"] -->|HTTPS| C["Infrastructure reverse proxy or optional Caddy"]
+    C -->|HTTP :8000| W["FastAPI web application"]
     Y["Private client YAML catalog"] --> W
     W --> T["Isolated temporary workspace"]
     T --> P["Checkbox and bank parsers"]
@@ -148,7 +149,7 @@ Uploads are copied into a request-specific temporary directory and removed when
 processing finishes. The generated workbook is returned directly as a download
 and is not stored by the web application.
 
-## Run with Docker and HTTPS
+## Run with Docker
 
 ```bash
 cp .env.example .env
@@ -156,9 +157,20 @@ docker compose up -d --build
 docker compose ps
 ```
 
-The local Docker URL is `https://localhost`. Caddy terminates HTTPS and proxies
-requests to FastAPI. Port 8000 is bound to `127.0.0.1` for diagnostics only and
-cannot be used by another computer to bypass HTTPS.
+By default, FastAPI is available at `http://127.0.0.1:8000`. The bind address is
+configurable through `INCOME_BOOK_BIND_ADDRESS`. A production VM can publish
+the port on its private interface so an existing infrastructure reverse proxy
+can terminate HTTPS and forward requests to the application.
+
+For a standalone deployment without an existing reverse proxy, start the
+optional Caddy profile:
+
+```bash
+docker compose --profile internal-https up -d --build
+```
+
+The standalone local URL is `https://localhost`. Caddy uses its internal CA,
+adds security headers, and proxies requests to FastAPI.
 
 Production configuration, internal certificate installation, updates,
 diagnostics, and rollback rules are documented in
@@ -334,8 +346,9 @@ src/income_book_automation/
 - Client profiles are mounted read-only into the application container.
 - The original workbook is never used as the output path.
 - Uploaded files live only in an isolated temporary request directory.
-- Caddy encrypts internal traffic with HTTPS; FastAPI is not directly exposed
-  to the network on port 8000.
+- TLS terminates at the configured reverse proxy. Port 8000 binds to loopback
+  by default and must be limited to the private interface and trusted proxy
+  network when it is exposed on a production VM.
 - Ambiguous credits fail closed and require human review.
 
 HTTPS protects traffic but does not authenticate a person. The current internal
