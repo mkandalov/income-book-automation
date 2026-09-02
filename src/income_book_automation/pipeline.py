@@ -36,8 +36,9 @@ from income_book_automation.parsers.privat import parse_privat_file
 from income_book_automation.parsers.pumb import parse_pumb_file
 from income_book_automation.parsers.sense import parse_sense_file
 from income_book_automation.rules.bank_rules import (
+    DuplicateSettlementProvider,
     classify_bank_transaction,
-    is_sense_acquiring_settlement,
+    detect_duplicate_settlement,
 )
 from income_book_automation.rules.deduplication import deduplicate_bank_transaction
 from income_book_automation.rules.income_rules import (
@@ -73,8 +74,8 @@ class UnresolvedTransactionsError(IncomeBookPipelineError):
         super().__init__(f"{len(records)} bank transaction(s) require manual review")
 
 
-class SenseAcquiringRequiresCheckboxError(IncomeBookPipelineError):
-    """Raised when Sense acquiring cannot be reconstructed without Checkbox."""
+class DuplicateSettlementRequiresCheckboxError(IncomeBookPipelineError):
+    """Raised when a duplicate settlement cannot be handled without Checkbox."""
 
 
 BANK_DISPLAY_NAMES = {
@@ -83,6 +84,12 @@ BANK_DISPLAY_NAMES = {
     BankName.MONO: "Mono",
     BankName.ABANK: "А-Банк",
     BankName.SENSE: "Сенс Банк",
+}
+
+SETTLEMENT_PROVIDER_NAMES = {
+    DuplicateSettlementProvider.LIQPAY: "LiqPay",
+    DuplicateSettlementProvider.BOLT: "Bolt Food",
+    DuplicateSettlementProvider.SENSE_ACQUIRING: "еквайринг Sense Bank",
 }
 
 
@@ -304,22 +311,20 @@ def run_income_book_pipeline(
     deduplication_result = deduplicate_bank_transaction(bank_transactions)
 
     if checkbox_path is None:
-        sense_acquiring = next(
-            (
-                transaction
-                for transaction in deduplication_result.unique
-                if is_sense_acquiring_settlement(transaction)
-            ),
-            None,
-        )
-        if sense_acquiring is not None:
-            source = sense_acquiring.source
-            raise SenseAcquiringRequiresCheckboxError(
-                f"У виписці Sense Bank «{source.original_filename}», "
-                f"рядок {source.row_number}, знайдено зарахування еквайрингу. "
-                "За банківською випискою видно лише суму після утримання "
-                "комісії, тому правильно сформувати дохід без Z-звіту "
-                "Checkbox неможливо. Додайте Z-звіт Checkbox та оберіть "
+        for transaction in deduplication_result.unique:
+            settlement_provider = detect_duplicate_settlement(transaction)
+            if settlement_provider is None:
+                continue
+
+            source = transaction.source
+            provider_name = SETTLEMENT_PROVIDER_NAMES[settlement_provider]
+            bank_name = BANK_DISPLAY_NAMES[transaction.bank]
+            raise DuplicateSettlementRequiresCheckboxError(
+                f"У банківській виписці «{source.original_filename}», "
+                f"вибраній для банку {bank_name}, рядок {source.row_number}, "
+                f"знайдено виплату {provider_name}. Вона може дублювати дохід, "
+                "уже врахований у Checkbox, а сума зарахування може бути "
+                "зменшена на комісію. Додайте Z-звіт Checkbox та оберіть "
                 "режим «Checkbox і банківські виписки»."
             )
 

@@ -57,6 +57,9 @@ REVIEW_REASON_LABELS = {
     "counterparty identity conflicts with client profile": (
         "Реквізити контрагента суперечать профілю клієнта"
     ),
+    "settlement provider identity requires review": (
+        "Ознаки виплати сервісу не збігаються з реквізитами контрагента"
+    ),
 }
 
 

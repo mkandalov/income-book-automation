@@ -153,15 +153,45 @@ def test_excludes_refund_payment_purpose() -> None:
     assert result.reason == "refund payment"
 
 
-def test_excludes_returnable_financial_assistance() -> None:
+@pytest.mark.parametrize(
+    "payment_purpose",
+    [
+        "Поворотна фінансова допомога згідно договору",
+        "Надання поворотно-фінансової допомоги згідно договору",
+        "Надання повортної фінансової допомоги згідно договору",
+        "Поворотна фінасова допомога без ПДВ",
+        "Поворотна фінансова допомгоа без ПДВ",
+    ],
+)
+def test_excludes_returnable_financial_assistance_with_inflections_and_typos(
+    payment_purpose: str,
+) -> None:
     transaction = _credit_transaction(
-        payment_purpose="Поворотна фінансова допомога згідно договору",
+        payment_purpose=payment_purpose,
     )
 
     result = classify_bank_transaction(transaction, _client_profile())
 
     assert result.category is TransactionCategory.EXCLUDED
     assert result.reason == "returnable financial assistance"
+
+
+@pytest.mark.parametrize(
+    "payment_purpose",
+    [
+        "Безповоротна фінансова допомога",
+        "Без поворотна фінансова допомога",
+        "Благодійна фінансова допомога",
+    ],
+)
+def test_does_not_confuse_other_assistance_with_returnable_assistance(
+    payment_purpose: str,
+) -> None:
+    transaction = _credit_transaction(payment_purpose=payment_purpose)
+
+    result = classify_bank_transaction(transaction, _client_profile())
+
+    assert result.category is TransactionCategory.INCOME
 
 
 def test_excludes_currency_sale_proceeds() -> None:
@@ -185,6 +215,108 @@ def test_classifies_regular_credit_as_income() -> None:
     assert result.reason == "eligible incoming payment"
 
 
+@pytest.mark.parametrize("bank", list(BankName))
+def test_excludes_bolt_by_tax_id_for_every_bank_when_checkbox_is_included(
+    bank: BankName,
+) -> None:
+    transaction = _credit_transaction(
+        bank=bank,
+        counterparty="Назва може змінитися",
+        counterparty_tax_id="43637532",
+        payment_purpose="Інший формат виплати",
+    )
+
+    result = classify_bank_transaction(
+        transaction,
+        _client_profile(),
+        checkbox_included=True,
+    )
+
+    assert result.category is TransactionCategory.EXCLUDED
+    assert result.reason == "bolt settlement covered by Checkbox"
+
+
+@pytest.mark.parametrize(
+    ("counterparty", "payment_purpose"),
+    [
+        (
+            "Платежi через LiqPay",
+            "Plateji LiqPay za 2026.07.31, kom.banka 3.11",
+        ),
+        (
+            "Платежi через LiqPay",
+            "LIQPAY ID 2912815416 SOID TEST PBK DATE 2026-08-21",
+        ),
+        ("Liq Pay", "Виплата за операціями"),
+    ],
+)
+@pytest.mark.parametrize("bank", list(BankName))
+def test_excludes_verified_liqpay_formats_when_checkbox_is_included(
+    bank: BankName,
+    counterparty: str,
+    payment_purpose: str,
+) -> None:
+    transaction = _credit_transaction(
+        bank=bank,
+        counterparty=counterparty,
+        counterparty_tax_id="14360570",
+        payment_purpose=payment_purpose,
+    )
+
+    result = classify_bank_transaction(
+        transaction,
+        _client_profile(),
+        checkbox_included=True,
+    )
+
+    assert result.category is TransactionCategory.EXCLUDED
+    assert result.reason == "liqpay settlement covered by Checkbox"
+
+
+def test_does_not_exclude_privat_tax_id_without_liqpay_marker() -> None:
+    transaction = _credit_transaction(
+        counterparty="АТ КБ ПриватБанк",
+        counterparty_tax_id="14360570",
+        payment_purpose="Компенсація згідно договору",
+    )
+
+    result = classify_bank_transaction(
+        transaction,
+        _client_profile(),
+        checkbox_included=True,
+    )
+
+    assert result.category is TransactionCategory.INCOME
+
+
+@pytest.mark.parametrize(
+    ("counterparty", "counterparty_tax_id", "payment_purpose"),
+    [
+        ("Платежі через LiqPay", "99999999", "LIQPAY ID 123"),
+        ("ТОВ БОЛТ ОПЕРЕЙШНЗ", "99999999", "BOLTFOOD UA TEST"),
+    ],
+)
+def test_sends_provider_marker_with_unexpected_tax_id_to_review(
+    counterparty: str,
+    counterparty_tax_id: str,
+    payment_purpose: str,
+) -> None:
+    transaction = _credit_transaction(
+        counterparty=counterparty,
+        counterparty_tax_id=counterparty_tax_id,
+        payment_purpose=payment_purpose,
+    )
+
+    result = classify_bank_transaction(
+        transaction,
+        _client_profile(),
+        checkbox_included=True,
+    )
+
+    assert result.category is TransactionCategory.NEEDS_REVIEW
+    assert result.reason == "settlement provider identity requires review"
+
+
 def test_excludes_sense_acquiring_when_checkbox_is_included() -> None:
     transaction = _credit_transaction(
         bank=BankName.SENSE,
@@ -201,7 +333,7 @@ def test_excludes_sense_acquiring_when_checkbox_is_included() -> None:
     )
 
     assert result.category is TransactionCategory.EXCLUDED
-    assert result.reason == "Sense acquiring settlement covered by Checkbox"
+    assert result.reason == "sense_acquiring settlement covered by Checkbox"
 
 
 @pytest.mark.parametrize(

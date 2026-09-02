@@ -108,6 +108,29 @@ def test_build_review_transaction_rows_explains_identity_conflict() -> None:
     assert result[0].missing_fields == ()
 
 
+def test_build_review_transaction_rows_explains_settlement_identity_conflict() -> None:
+    transaction = _review_transaction().transaction.model_copy(
+        update={
+            "counterparty": "Платежі через LiqPay",
+            "counterparty_account": "UA753000010000000000000000010",
+            "counterparty_tax_id": "99999999",
+            "payment_purpose": "LIQPAY ID 123",
+        }
+    )
+    record = ClassifiedTransaction(
+        transaction=transaction,
+        category=TransactionCategory.NEEDS_REVIEW,
+        reason="settlement provider identity requires review",
+    )
+
+    result = processing.build_review_transaction_rows((record,))
+
+    assert result[0].reason == (
+        "Ознаки виплати сервісу не збігаються з реквізитами контрагента"
+    )
+    assert result[0].missing_fields == ()
+
+
 def _validate_request(
     *,
     client_id: str = "client-test-001",
