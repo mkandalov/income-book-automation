@@ -190,9 +190,7 @@ def test_excludes_sense_acquiring_when_checkbox_is_included() -> None:
         bank=BankName.SENSE,
         counterparty='АТ "СЕНС БАНК"',
         counterparty_tax_id="23494714",
-        payment_purpose=(
-            "Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"
-        ),
+        payment_purpose=("Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"),
         credit=Decimal("98.70"),
     )
 

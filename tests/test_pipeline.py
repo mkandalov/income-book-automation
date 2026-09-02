@@ -639,9 +639,7 @@ def test_pipeline_excludes_sense_acquiring_when_checkbox_is_provided(
         statement_path,
         counterparty='АТ "СЕНС БАНК"',
         counterparty_tax_id="23494714",
-        payment_purpose=(
-            "Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"
-        ),
+        payment_purpose=("Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"),
         amount="98,70",
     )
     _write_checkbox_report(
@@ -664,10 +662,7 @@ def test_pipeline_excludes_sense_acquiring_when_checkbox_is_provided(
         sheet_name="2026",
     )
 
-    assert (
-        result.classified_transactions[0].category
-        is TransactionCategory.EXCLUDED
-    )
+    assert result.classified_transactions[0].category is TransactionCategory.EXCLUDED
     assert result.daily_entries[0].checkbox_card_income == Decimal("100.00")
     assert result.daily_entries[0].bank_income == Decimal("0.00")
     assert result.daily_entries[0].total_income == Decimal("100.00")
@@ -682,9 +677,7 @@ def test_pipeline_blocks_sense_acquiring_without_checkbox(tmp_path: Path) -> Non
         statement_path,
         counterparty='АТ "СЕНС БАНК"',
         counterparty_tax_id="23494714",
-        payment_purpose=(
-            "Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"
-        ),
+        payment_purpose=("Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"),
         amount="98,70",
     )
     _write_income_book_template(template_path)
