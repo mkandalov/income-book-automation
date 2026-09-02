@@ -22,10 +22,10 @@ from income_book_automation.parsers.checkbox import (
 from income_book_automation.parsers.errors import BankStatementFormatError
 from income_book_automation.pipeline import (
     BankStatementSource,
+    DuplicateSettlementRequiresCheckboxError,
     IncomeBookPipelineError,
     MissingStatementAccountError,
     MixedPeriodError,
-    SenseAcquiringRequiresCheckboxError,
     UnresolvedTransactionsError,
     UnsupportedCurrencyError,
     run_income_book_pipeline,
@@ -36,6 +36,9 @@ def _write_pumb_statement(
     path: Path,
     *,
     include_incomplete_transaction: bool = False,
+    first_counterparty: str = "ТОВ Тестовий покупець",
+    first_counterparty_account: str = "UA753000010000000000000000010",
+    first_counterparty_tax_id: str = "11111111",
     first_payment_purpose: str = "Оплата за тестові послуги",
 ) -> None:
     rows = [
@@ -58,9 +61,9 @@ def _write_pumb_statement(
             "TEST-001",
             "0",
             "20.00",
-            "ТОВ Тестовий покупець",
-            "UA753000010000000000000000010",
-            "11111111",
+            first_counterparty,
+            first_counterparty_account,
+            first_counterparty_tax_id,
             first_payment_purpose,
         ],
         [
@@ -668,6 +671,113 @@ def test_pipeline_excludes_sense_acquiring_when_checkbox_is_provided(
     assert result.daily_entries[0].total_income == Decimal("100.00")
 
 
+@pytest.mark.parametrize(
+    ("provider_name", "counterparty", "counterparty_tax_id", "payment_purpose"),
+    [
+        (
+            "LiqPay",
+            "Платежi через LiqPay",
+            "14360570",
+            "LIQPAY ID 2912815416 SOID TEST PBK DATE 2026-08-21",
+        ),
+        (
+            "Bolt Food",
+            "ТОВ БОЛТ ОПЕРЕЙШНЗ УКРАЇНА",
+            "43637532",
+            "P323648296 BOLTFOOD UA TEST",
+        ),
+    ],
+)
+def test_pipeline_excludes_known_settlements_when_checkbox_is_provided(
+    tmp_path: Path,
+    provider_name: str,
+    counterparty: str,
+    counterparty_tax_id: str,
+    payment_purpose: str,
+) -> None:
+    statement_path = tmp_path / f"{provider_name}.csv"
+    checkbox_path = tmp_path / "checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(
+        statement_path,
+        first_counterparty=counterparty,
+        first_counterparty_tax_id=counterparty_tax_id,
+        first_payment_purpose=payment_purpose,
+    )
+    _write_checkbox_report(checkbox_path)
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[
+            BankStatementSource(bank=BankName.PUMB, path=statement_path),
+        ],
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.classified_transactions[0].category is TransactionCategory.EXCLUDED
+    assert result.daily_entries[0].bank_income == Decimal("0.00")
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "counterparty", "counterparty_tax_id", "payment_purpose"),
+    [
+        (
+            "LiqPay",
+            "Платежi через LiqPay",
+            "14360570",
+            "Plateji LiqPay za 2026.07.31, kom.banka 3.11",
+        ),
+        (
+            "Bolt Food",
+            "ТОВ БОЛТ ОПЕРЕЙШНЗ УКРАЇНА",
+            "43637532",
+            "P323648296 BOLTFOOD UA TEST",
+        ),
+    ],
+)
+def test_pipeline_blocks_known_settlements_without_checkbox(
+    tmp_path: Path,
+    provider_name: str,
+    counterparty: str,
+    counterparty_tax_id: str,
+    payment_purpose: str,
+) -> None:
+    statement_path = tmp_path / f"{provider_name}.csv"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_pumb_statement(
+        statement_path,
+        first_counterparty=counterparty,
+        first_counterparty_tax_id=counterparty_tax_id,
+        first_payment_purpose=payment_purpose,
+    )
+    _write_income_book_template(template_path)
+
+    with pytest.raises(
+        DuplicateSettlementRequiresCheckboxError,
+        match=rf"{provider_name}\.csv.*рядок 2.*{provider_name}",
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank_statements=[
+                BankStatementSource(bank=BankName.PUMB, path=statement_path),
+            ],
+            checkbox_path=None,
+            template_path=template_path,
+            output_path=output_path,
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+
 def test_pipeline_blocks_sense_acquiring_without_checkbox(tmp_path: Path) -> None:
     statement_path = tmp_path / "sense-acquiring.csv"
     template_path = tmp_path / "template.xlsx"
@@ -683,8 +793,8 @@ def test_pipeline_blocks_sense_acquiring_without_checkbox(tmp_path: Path) -> Non
     _write_income_book_template(template_path)
 
     with pytest.raises(
-        SenseAcquiringRequiresCheckboxError,
-        match="sense-acquiring.csv.*рядок 2.*Z-звіту Checkbox",
+        DuplicateSettlementRequiresCheckboxError,
+        match="sense-acquiring.csv.*рядок 2.*еквайринг Sense Bank",
     ):
         run_income_book_pipeline(
             client=_client_profile(),

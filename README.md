@@ -264,8 +264,14 @@ statement order.
   legal name, or exact alias are not income.
 - Conflicting client identifiers are sent to manual review rather than silently
   included or excluded.
+- Verified Bolt Food, LiqPay, and Sense acquiring settlements are excluded when
+  Checkbox is included, preventing the same fiscalized sale from being counted
+  twice. Bank-only processing is blocked for these settlements because the
+  credited value may be net of commission.
 - Refunds, returnable financial assistance, and currency-sale proceeds are
-  excluded by normalized payment-purpose rules.
+  excluded by normalized payment-purpose rules. Returnable assistance matching
+  supports grammatical inflections and small typographical errors without
+  confusing it with `безповоротна` assistance.
 - Only transactions classified as income contribute to daily bank totals.
 - A date is omitted only when card net, cash net, and eligible bank income are
   all individually zero. Offsetting positive and negative components are kept.

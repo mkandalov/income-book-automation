@@ -227,7 +227,27 @@ debit > 0
 Debit exclusion runs before the missing-field rule because outgoing payments
 never contribute to income.
 
-### 7.2 Missing credit fields
+### 7.2 Known Checkbox settlement providers
+
+Some bank credits are delayed settlements for sales that Checkbox has already
+reported. They are detected from the normalized transaction fields shared by
+all bank parsers:
+
+| Provider | Verified evidence |
+| --- | --- |
+| Bolt Food | counterparty tax ID `43637532` |
+| LiqPay | counterparty tax ID `14360570` and `LiqPay` in the counterparty name or payment purpose |
+| Sense acquiring | Sense Bank transaction and `еквайрінг` or `еквайринг` in the payment purpose |
+
+When Checkbox is included, a verified settlement is `EXCLUDED` so the same
+sale is not counted twice. When only bank statements are provided, export is
+blocked because the credited amount may be net of commission and may use a
+different settlement date than the original sale.
+
+A LiqPay or Bolt text marker paired with an unexpected tax ID is sent to manual
+review instead of being silently included or excluded.
+
+### 7.3 Missing credit fields
 
 An incoming transaction requires all five review fields:
 
@@ -246,7 +266,7 @@ If any are missing:
 All missing fields are retained in the classified record so the review page can
 name them explicitly.
 
-### 7.3 Conflicting counterparty identity
+### 7.4 Conflicting counterparty identity
 
 After all review fields are present, a populated foreign tax ID conflicts with
 the client profile when either of these also matches the client:
@@ -262,28 +282,28 @@ foreign tax ID + own account/name
 An unknown account paired with the client's tax ID is not a conflict because
 the optional own-account list may be incomplete.
 
-### 7.4 Known own account
+### 7.5 Known own account
 
 ```text
 counterparty account in own_accounts
 -> OWN_TRANSFER
 ```
 
-### 7.5 Matching client tax ID
+### 7.6 Matching client tax ID
 
 ```text
 counterparty tax ID == client tax ID after digit normalization
 -> OWN_TRANSFER
 ```
 
-### 7.6 Matching client name
+### 7.7 Matching client name
 
 ```text
 counterparty name == legal_name or configured alias after normalization
 -> OWN_TRANSFER
 ```
 
-### 7.7 Excluded payment purpose
+### 7.8 Excluded payment purpose
 
 Payment purposes are case-insensitive; hyphens are treated as spaces and
 repeated whitespace is collapsed.
@@ -291,13 +311,15 @@ repeated whitespace is collapsed.
 | Phrase family | Result |
 | --- | --- |
 | `повернення` / `повернення коштів` | EXCLUDED: refund |
-| `поворотна фінансова допомога` | EXCLUDED: returnable financial assistance |
-| `поворотно фінансова допомога` | EXCLUDED: returnable financial assistance |
+| nearby forms of `поворотн*`, `фінанс*`, and `допомог*` | EXCLUDED: returnable financial assistance |
 | `гривні від продажу` | EXCLUDED: currency-sale proceeds |
 
-The phrase may appear inside a longer payment purpose.
+The phrase may appear inside a longer payment purpose. Returnable financial
+assistance accepts grammatical inflections and one insertion, deletion,
+substitution, or adjacent transposition in each key stem. `безповоротна`
+assistance is explicitly not matched by this exclusion.
 
-### 7.8 Eligible credit
+### 7.9 Eligible credit
 
 Any remaining validated credit is classified as:
 
