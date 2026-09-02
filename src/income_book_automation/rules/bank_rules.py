@@ -1,6 +1,7 @@
 """Deterministic bank transaction classification rules."""
 
 from income_book_automation.models import (
+    BankName,
     BankTransaction,
     ClassifiedTransaction,
     ClientProfile,
@@ -22,6 +23,11 @@ EXCLUDED_PAYMENT_RULES = (
     ("гривні від продажу", "currency sale proceeds"),
 )
 
+SENSE_ACQUIRING_MARKERS = (
+    "еквайрінг",
+    "еквайринг",
+)
+
 
 def _normalize_account(value: str) -> str:
     return "".join(value.split()).upper()
@@ -37,6 +43,15 @@ def _normalize_tax_id(value: str | None) -> str:
 def _normalize_text(value: str) -> str:
     value = value.casefold().replace("-", " ")
     return " ".join(value.split())
+
+
+def is_sense_acquiring_settlement(transaction: BankTransaction) -> bool:
+    """Return whether a credit is a verified Sense acquiring settlement."""
+    if transaction.bank is not BankName.SENSE or transaction.credit <= 0:
+        return False
+
+    payment_purpose = _normalize_text(transaction.payment_purpose)
+    return any(marker in payment_purpose for marker in SENSE_ACQUIRING_MARKERS)
 
 
 def _find_missing_review_fields(
@@ -65,12 +80,21 @@ def _find_missing_review_fields(
 def classify_bank_transaction(
     transaction: BankTransaction,
     client: ClientProfile,
+    *,
+    checkbox_included: bool = False,
 ) -> ClassifiedTransaction:
     if transaction.debit > 0:
         return ClassifiedTransaction(
             transaction=transaction,
             category=TransactionCategory.EXCLUDED,
             reason="debit transaction",
+        )
+
+    if checkbox_included and is_sense_acquiring_settlement(transaction):
+        return ClassifiedTransaction(
+            transaction=transaction,
+            category=TransactionCategory.EXCLUDED,
+            reason="Sense acquiring settlement covered by Checkbox",
         )
 
     missing_fields = _find_missing_review_fields(transaction)

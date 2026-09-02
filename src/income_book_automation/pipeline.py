@@ -35,7 +35,10 @@ from income_book_automation.parsers.mono import parse_mono_file
 from income_book_automation.parsers.privat import parse_privat_file
 from income_book_automation.parsers.pumb import parse_pumb_file
 from income_book_automation.parsers.sense import parse_sense_file
-from income_book_automation.rules.bank_rules import classify_bank_transaction
+from income_book_automation.rules.bank_rules import (
+    classify_bank_transaction,
+    is_sense_acquiring_settlement,
+)
 from income_book_automation.rules.deduplication import deduplicate_bank_transaction
 from income_book_automation.rules.income_rules import (
     aggregate_bank_income_by_date,
@@ -68,6 +71,10 @@ class UnresolvedTransactionsError(IncomeBookPipelineError):
         self.records = records
 
         super().__init__(f"{len(records)} bank transaction(s) require manual review")
+
+
+class SenseAcquiringRequiresCheckboxError(IncomeBookPipelineError):
+    """Raised when Sense acquiring cannot be reconstructed without Checkbox."""
 
 
 BANK_DISPLAY_NAMES = {
@@ -295,8 +302,33 @@ def run_income_book_pipeline(
         _validate_transaction_currencies(transactions)
         bank_transactions.extend(transactions)
     deduplication_result = deduplicate_bank_transaction(bank_transactions)
+
+    if checkbox_path is None:
+        sense_acquiring = next(
+            (
+                transaction
+                for transaction in deduplication_result.unique
+                if is_sense_acquiring_settlement(transaction)
+            ),
+            None,
+        )
+        if sense_acquiring is not None:
+            source = sense_acquiring.source
+            raise SenseAcquiringRequiresCheckboxError(
+                f"У виписці Sense Bank «{source.original_filename}», "
+                f"рядок {source.row_number}, знайдено зарахування еквайрингу. "
+                "За банківською випискою видно лише суму після утримання "
+                "комісії, тому правильно сформувати дохід без Z-звіту "
+                "Checkbox неможливо. Додайте Z-звіт Checkbox та оберіть "
+                "режим «Checkbox і банківські виписки»."
+            )
+
     classified_transactions = [
-        classify_bank_transaction(transaction, client)
+        classify_bank_transaction(
+            transaction,
+            client,
+            checkbox_included=checkbox_path is not None,
+        )
         for transaction in deduplication_result.unique
     ]
 

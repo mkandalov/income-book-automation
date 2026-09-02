@@ -25,6 +25,7 @@ from income_book_automation.pipeline import (
     IncomeBookPipelineError,
     MissingStatementAccountError,
     MixedPeriodError,
+    SenseAcquiringRequiresCheckboxError,
     UnresolvedTransactionsError,
     UnsupportedCurrencyError,
     run_income_book_pipeline,
@@ -185,7 +186,14 @@ def _write_abank_statement(path: Path) -> None:
         writer.writerows(rows)
 
 
-def _write_sense_statement(path: Path) -> None:
+def _write_sense_statement(
+    path: Path,
+    *,
+    counterparty: str = "ТОВ Тестовий покупець",
+    counterparty_tax_id: str = "11111111",
+    payment_purpose: str = "Оплата за послуги; без ПДВ",
+    amount: str = "20,00",
+) -> None:
     headers = [
         "Наш рахунок",
         "Наш IBAN",
@@ -214,12 +222,12 @@ def _write_sense_statement(path: Path) -> None:
         "26000000000002",
         "UA753000010000000000000000010",
         "300001",
-        "ТОВ Тестовий покупець",
-        "11111111",
-        "Оплата за послуги; без ПДВ",
+        counterparty,
+        counterparty_tax_id,
+        payment_purpose,
         "01.06.2026",
         "TEST-SENSE-001",
-        "20,00",
+        amount,
         "UAH",
         "12:00:00",
         "01.06.2026",
@@ -617,6 +625,79 @@ def test_run_income_book_pipeline_supports_sense_bank(tmp_path: Path) -> None:
 
     assert result.classified_transactions[0].transaction.bank is BankName.SENSE
     assert result.daily_entries[0].bank_income == Decimal("20.00")
+
+
+def test_pipeline_excludes_sense_acquiring_when_checkbox_is_provided(
+    tmp_path: Path,
+) -> None:
+    statement_path = tmp_path / "sense-acquiring.csv"
+    checkbox_path = tmp_path / "checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_sense_statement(
+        statement_path,
+        counterparty='АТ "СЕНС БАНК"',
+        counterparty_tax_id="23494714",
+        payment_purpose=("Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"),
+        amount="98,70",
+    )
+    _write_checkbox_report(
+        checkbox_path,
+        card_revenue=100,
+        card_refund=0,
+        cash_revenue=0,
+        cash_refund=0,
+    )
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[
+            BankStatementSource(bank=BankName.SENSE, path=statement_path),
+        ],
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.classified_transactions[0].category is TransactionCategory.EXCLUDED
+    assert result.daily_entries[0].checkbox_card_income == Decimal("100.00")
+    assert result.daily_entries[0].bank_income == Decimal("0.00")
+    assert result.daily_entries[0].total_income == Decimal("100.00")
+
+
+def test_pipeline_blocks_sense_acquiring_without_checkbox(tmp_path: Path) -> None:
+    statement_path = tmp_path / "sense-acquiring.csv"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_sense_statement(
+        statement_path,
+        counterparty='АТ "СЕНС БАНК"',
+        counterparty_tax_id="23494714",
+        payment_purpose=("Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"),
+        amount="98,70",
+    )
+    _write_income_book_template(template_path)
+
+    with pytest.raises(
+        SenseAcquiringRequiresCheckboxError,
+        match="sense-acquiring.csv.*рядок 2.*Z-звіту Checkbox",
+    ):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank_statements=[
+                BankStatementSource(bank=BankName.SENSE, path=statement_path),
+            ],
+            checkbox_path=None,
+            template_path=template_path,
+            output_path=output_path,
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
 
 
 def test_pipeline_ignores_outgoing_transaction_from_adjacent_month_for_period(
