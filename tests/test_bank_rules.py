@@ -185,6 +185,27 @@ def test_classifies_regular_credit_as_income() -> None:
     assert result.reason == "eligible incoming payment"
 
 
+def test_excludes_sense_acquiring_when_checkbox_is_included() -> None:
+    transaction = _credit_transaction(
+        bank=BankName.SENSE,
+        counterparty='АТ "СЕНС БАНК"',
+        counterparty_tax_id="23494714",
+        payment_purpose=(
+            "Зарах.еквайрінг; сума 100.00грн; комісія 1.30грн"
+        ),
+        credit=Decimal("98.70"),
+    )
+
+    result = classify_bank_transaction(
+        transaction,
+        _client_profile(),
+        checkbox_included=True,
+    )
+
+    assert result.category is TransactionCategory.EXCLUDED
+    assert result.reason == "Sense acquiring settlement covered by Checkbox"
+
+
 @pytest.mark.parametrize(
     ("overrides", "expected_missing_field"),
     [
