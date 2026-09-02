@@ -1,8 +1,10 @@
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
 from urllib.parse import quote
+from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, Response
@@ -26,6 +28,7 @@ from income_book_automation.pipeline import (
     UnresolvedTransactionsError,
 )
 from income_book_automation.web.processing import (
+    IncomeSourceMode,
     UploadInputError,
     build_review_transaction_rows,
     generate_income_book_from_uploads,
@@ -41,6 +44,7 @@ CLIENT_CONFIG_DIRECTORY = Path(
 )
 
 templates = Jinja2Templates(directory=WEB_DIRECTORY / "templates")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Income Book Automation",
@@ -132,13 +136,14 @@ def _serialize_checkbox_warnings(
 def generate_income_book(
     request: Request,
     client_id: Annotated[str, Form()],
-    banks: Annotated[list[BankName], Form()],
-    bank_statements: Annotated[list[UploadFile], File()],
-    account_numbers: Annotated[list[str], Form()],
-    checkbox_report: Annotated[UploadFile, File()],
+    source_mode: Annotated[IncomeSourceMode, Form()],
     template_file: Annotated[UploadFile, File()],
     sheet_name: Annotated[str, Form()],
     output_filename: Annotated[str, Form()],
+    banks: Annotated[list[BankName] | None, Form()] = None,
+    bank_statements: Annotated[list[UploadFile] | None, File()] = None,
+    account_numbers: Annotated[list[str] | None, Form()] = None,
+    checkbox_report: Annotated[UploadFile | None, File()] = None,
     helper_total_column: Annotated[int, Form()] = 10,
     checkbox_card_column: Annotated[int, Form()] = 11,
     checkbox_cash_column: Annotated[int, Form()] = 12,
@@ -155,6 +160,7 @@ def generate_income_book(
         result = generate_income_book_from_uploads(
             client_id=client_id,
             client_config_directory=CLIENT_CONFIG_DIRECTORY,
+            source_mode=source_mode,
             banks=banks,
             bank_statements=bank_statements,
             account_numbers=account_numbers,
@@ -192,6 +198,26 @@ def generate_income_book(
                 "error_message": str(error),
             },
             status_code=400,
+        )
+    except Exception:
+        error_code = uuid4().hex[:8].upper()
+        logger.exception(
+            "Unexpected income-book generation error [code=%s]",
+            error_code,
+        )
+
+        return templates.TemplateResponse(
+            request=request,
+            name="error.html",
+            context={
+                "page_title": "Неочікувана помилка",
+                "error_message": (
+                    "Сталася неочікувана помилка. "
+                    f"Код помилки: {error_code}. Повторіть спробу або "
+                    "повідомте цей код адміністратору."
+                ),
+            },
+            status_code=500,
         )
 
     download_filename = _normalize_output_filename(

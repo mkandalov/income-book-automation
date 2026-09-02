@@ -3,7 +3,8 @@
 [![CI](https://github.com/mkandalov/income-book-automation/actions/workflows/ci.yml/badge.svg)](https://github.com/mkandalov/income-book-automation/actions/workflows/ci.yml)
 
 Income Book Automation is a production-oriented Python service that prepares
-Ukrainian income-book workbooks from Checkbox Z-reports and bank statements. It
+Ukrainian income-book workbooks from Checkbox Z-reports, bank statements, or
+both sources together. It
 turns a repetitive accounting workflow into a deterministic pipeline with
 strict input validation, transaction classification, daily aggregation, manual
 review gates, and preservation of the existing Excel template.
@@ -33,10 +34,12 @@ domain model, applies explicit accounting rules, and produces a reviewable
 The web interface guides an employee through one monthly processing run:
 
 1. Search for and select a client from the server-managed client catalog.
-2. Add between one and ten CSV statements and select the corresponding bank for
-   each file. A Monobank statement also requires its statement IBAN.
-3. Upload one Checkbox `.xlsx` Z-report and one `.xlsx` income-book template.
-4. Select the worksheet, output filename, and four helper-column positions.
+2. Choose whether this run uses both sources, only Checkbox, or only bank
+   statements.
+3. Upload the selected sources. A Monobank statement also requires its
+   statement IBAN.
+4. Upload one `.xlsx` income-book template and select the worksheet, output
+   filename, and four helper-column positions.
 5. Generate and download the result.
 
 If a credit cannot be classified safely, the application does not generate a
@@ -54,7 +57,8 @@ unchanged template is downloaded with a separate warning.
 - Typer CLI for local and scripted processing.
 - Checkbox `.xlsx` Z-report parsing by normalized header name, including
   reordered columns and formula-cache validation.
-- Strict CSV parsers for PUMB, PrivatBank, Monobank, and A-Bank.
+- Strict CSV parsers for PUMB, PrivatBank, Monobank, A-Bank, and Sense Bank.
+- Web generation from both income sources or either source independently.
 - Multiple statements from one or several supported banks in a single run.
 - File-level duplicate detection and transaction-level deduplication for
   overlapping statements.
@@ -109,12 +113,14 @@ pipeline, so accounting decisions do not depend on the interface used.
 | PrivatBank | `.csv` | Semicolon-delimited CP1251 export with signed amounts |
 | Monobank | `.csv` | Semicolon-delimited UTF-8 export; statement IBAN is entered separately |
 | A-Bank | `.csv` | Comma-delimited UTF-8 export; account and currency come from metadata |
+| Sense Bank | `.csv` | Semicolon-delimited CP1251 export; unescaped semicolons inside payment purposes are reconstructed |
 | Client profile | `.yaml` / `.yml` | Stored privately on the server, not uploaded by employees |
 | Income-book template | `.xlsx` | Existing workbook whose worksheet and styles are preserved |
 | Generated result | `.xlsx` | New file; the uploaded template is never overwritten |
 
-Every bank transaction must be in UAH. One run may contain only one calendar
-month across all bank statements and the Checkbox report.
+Every bank transaction must be in UAH. Income-bearing bank credits and Checkbox
+rows in one run may belong to only one calendar month. Outgoing bank debits do
+not define the processing month.
 
 ## Installation
 
@@ -312,7 +318,7 @@ uv run pytest -q
 docker compose config --quiet
 ```
 
-The suite currently contains 250 automated tests covering parsers, malformed
+The suite currently contains 267 automated tests covering parsers, malformed
 inputs, validation, domain models, IBAN checks, classification, deduplication,
 aggregation, Excel export, client configuration, CLI behavior, web requests,
 review pages, warnings, and downloads.

@@ -8,11 +8,15 @@ from openpyxl.styles import Border, PatternFill, Side
 from openpyxl.worksheet.worksheet import Worksheet
 
 from income_book_automation.exporters.income_book import (
+    DuplicateMonthTotalRowError,
     HelperColumnMapping,
     IncomeBookExportError,
+    IncomeBookTemplateReadError,
     InvalidHelperColumnMappingError,
     MissingIncomeBookDateError,
     MissingIncomeBookSheetError,
+    MissingMonthTotalRowError,
+    MissingYearTotalRowError,
     export_income_book,
 )
 from income_book_automation.models import DailyIncomeBookEntry
@@ -50,6 +54,7 @@ def _create_book_through_may(
     path: Path,
     *,
     may_total_label: str = "Всього травень:",
+    year_total_label: str = "Всього 2026 рік:",
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -71,7 +76,7 @@ def _create_book_through_may(
     sheet["A9"] = may_total_label
     sheet["B9"] = "=SUM(B8:B8)"
 
-    sheet["A10"] = "Всього 2026 рік:"
+    sheet["A10"] = year_total_label
     sheet["B10"] = "=B7+B9"
 
     sheet["A8"].number_format = "m/d/yy"
@@ -370,7 +375,7 @@ def test_export_income_book_supports_custom_helper_columns(
 def test_helper_column_mapping_rejects_duplicate_columns() -> None:
     with pytest.raises(
         InvalidHelperColumnMappingError,
-        match="must be unique",
+        match="Кожен показник",
     ):
         HelperColumnMapping(
             total=10,
@@ -383,7 +388,7 @@ def test_helper_column_mapping_rejects_duplicate_columns() -> None:
 def test_helper_column_mapping_rejects_official_columns() -> None:
     with pytest.raises(
         InvalidHelperColumnMappingError,
-        match="must start from column 10",
+        match=r"починатися з колонки 10 \(J\)",
     ):
         HelperColumnMapping(
             total=9,
@@ -396,7 +401,7 @@ def test_helper_column_mapping_rejects_official_columns() -> None:
 def test_helper_column_mapping_rejects_columns_after_fifteen() -> None:
     with pytest.raises(
         InvalidHelperColumnMappingError,
-        match="must not exceed column 15",
+        match=r"правіше колонки 15 \(O\)",
     ):
         HelperColumnMapping(
             total=10,
@@ -433,6 +438,22 @@ def test_export_income_book_rejects_missing_sheet(tmp_path: Path) -> None:
             output_path,
             [_entry()],
             sheet_name="missing-sheet",
+        )
+
+    assert not output_path.exists()
+
+
+def test_export_income_book_rejects_unreadable_template(tmp_path: Path) -> None:
+    template_path = tmp_path / "broken.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    template_path.write_bytes(b"not an XLSX workbook")
+
+    with pytest.raises(IncomeBookTemplateReadError, match="broken.xlsx"):
+        export_income_book(
+            template_path,
+            output_path,
+            [_entry()],
+            sheet_name="2026",
         )
 
     assert not output_path.exists()
@@ -499,6 +520,65 @@ def test_export_income_book_appends_new_month_and_period_totals(
         workbook.close()
 
 
+@pytest.mark.parametrize(
+    "year_total_label",
+    [
+        "Всього 2026 рік:",
+        "Всього 2026 рік",
+        "Всього 2026 рік:   ",
+        "Всього\xa02026\xa0рік:",
+        "ВСЬОГО 2026 РІК:",
+    ],
+)
+def test_export_income_book_accepts_year_total_label_variants(
+    tmp_path: Path,
+    year_total_label: str,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_through_may(
+        template_path,
+        year_total_label=year_total_label,
+    )
+
+    export_income_book(
+        template_path,
+        output_path,
+        [_entry(day=1)],
+        sheet_name="2026",
+    )
+
+    workbook = load_workbook(output_path, data_only=False)
+    try:
+        assert workbook["2026"]["A14"].value == "Всього 2026 рік:"
+    finally:
+        workbook.close()
+
+
+def test_export_income_book_rejects_missing_year_total_row(
+    tmp_path: Path,
+) -> None:
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _create_book_through_may(
+        template_path,
+        year_total_label="Нерозпізнаний річний підсумок",
+    )
+
+    with pytest.raises(
+        MissingYearTotalRowError,
+        match="Всього 2026 рік:",
+    ):
+        export_income_book(
+            template_path,
+            output_path,
+            [_entry(day=1)],
+            sheet_name="2026",
+        )
+
+    assert not output_path.exists()
+
+
 def test_export_income_book_repairs_misspelled_month_total_label(
     tmp_path: Path,
 ) -> None:
@@ -546,7 +626,7 @@ def test_export_income_book_rejects_duplicate_month_total_rows(
         workbook.close()
 
     with pytest.raises(
-        IncomeBookExportError,
+        DuplicateMonthTotalRowError,
         match="multiple total rows found for month: травень",
     ):
         export_income_book(
@@ -570,7 +650,7 @@ def test_export_income_book_rejects_month_data_without_total_row(
     )
 
     with pytest.raises(
-        IncomeBookExportError,
+        MissingMonthTotalRowError,
         match="month total row not found for existing data: травень",
     ):
         export_income_book(

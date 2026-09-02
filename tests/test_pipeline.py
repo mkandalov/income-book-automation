@@ -185,6 +185,55 @@ def _write_abank_statement(path: Path) -> None:
         writer.writerows(rows)
 
 
+def _write_sense_statement(path: Path) -> None:
+    headers = [
+        "Наш рахунок",
+        "Наш IBAN",
+        "Операція",
+        "Рахунок",
+        "IBAN",
+        "МФО банку контрагента",
+        "Найменування контрагента",
+        "Код контрагента",
+        "Призначення платежу",
+        "Дата проведення",
+        "Номер документа",
+        "Сума",
+        "Валюта",
+        "Час проведення",
+        "Дата документа",
+        "Дата архівування",
+        "Ід.код",
+        "Найменування",
+        "МФО",
+    ]
+    row = [
+        "26000000000001",
+        "UA273000010000000000000000001",
+        "Кредит",
+        "26000000000002",
+        "UA753000010000000000000000010",
+        "300001",
+        "ТОВ Тестовий покупець",
+        "11111111",
+        "Оплата за послуги; без ПДВ",
+        "01.06.2026",
+        "TEST-SENSE-001",
+        "20,00",
+        "UAH",
+        "12:00:00",
+        "01.06.2026",
+        "01.06.2026",
+        "0000000000",
+        "ФОП Тестовий Тарас Іванович",
+        "300001",
+    ]
+    path.write_text(
+        f"{';'.join(headers)}\n{';'.join(row)}\n",
+        encoding="cp1251",
+    )
+
+
 def _write_checkbox_report(
     path: Path,
     *,
@@ -292,6 +341,64 @@ def test_run_income_book_pipeline_processes_sources_and_exports_workbook(
         assert sheet["N6"].value == 20
     finally:
         workbook.close()
+
+
+def test_pipeline_supports_checkbox_without_bank_statements(tmp_path: Path) -> None:
+    checkbox_path = tmp_path / "checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _write_checkbox_report(checkbox_path)
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[],
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.classified_transactions == ()
+    assert result.daily_entries[0].checkbox_card_income == Decimal("90.00")
+    assert result.daily_entries[0].checkbox_cash_income == Decimal("50.00")
+    assert result.daily_entries[0].bank_income == Decimal("0.00")
+
+
+def test_pipeline_supports_bank_statements_without_checkbox(tmp_path: Path) -> None:
+    statement_path = tmp_path / "statement.csv"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    _write_pumb_statement(statement_path)
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[
+            BankStatementSource(bank=BankName.PUMB, path=statement_path),
+        ],
+        checkbox_path=None,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.checkbox_warnings == ()
+    assert result.daily_entries[0].checkbox_card_income == Decimal("0.00")
+    assert result.daily_entries[0].checkbox_cash_income == Decimal("0.00")
+    assert result.daily_entries[0].bank_income == Decimal("20.00")
+
+
+def test_pipeline_rejects_request_without_any_income_source(tmp_path: Path) -> None:
+    with pytest.raises(IncomeBookPipelineError, match="at least one income source"):
+        run_income_book_pipeline(
+            client=_client_profile(),
+            bank_statements=[],
+            checkbox_path=None,
+            template_path=tmp_path / "template.xlsx",
+            output_path=tmp_path / "output.xlsx",
+            sheet_name="2026",
+        )
 
 
 def test_pipeline_blocks_export_when_transaction_needs_review(
@@ -487,6 +594,85 @@ def test_run_income_book_pipeline_supports_abank(tmp_path: Path) -> None:
     assert len(result.classified_transactions) == 1
     assert result.classified_transactions[0].transaction.bank is BankName.ABANK
     assert result.daily_entries[0].bank_income == Decimal("20.00")
+
+
+def test_run_income_book_pipeline_supports_sense_bank(tmp_path: Path) -> None:
+    statement_path = tmp_path / "sense.csv"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+
+    _write_sense_statement(statement_path)
+    _write_income_book_template(template_path)
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[
+            BankStatementSource(bank=BankName.SENSE, path=statement_path),
+        ],
+        checkbox_path=None,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.classified_transactions[0].transaction.bank is BankName.SENSE
+    assert result.daily_entries[0].bank_income == Decimal("20.00")
+
+
+def test_pipeline_ignores_outgoing_transaction_from_adjacent_month_for_period(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    statement_path = tmp_path / "august-sense.csv"
+    checkbox_path = tmp_path / "august-checkbox.xlsx"
+    template_path = tmp_path / "template.xlsx"
+    output_path = tmp_path / "output.xlsx"
+    statement_path.write_text("synthetic", encoding="utf-8")
+    _write_checkbox_report(checkbox_path)
+    _write_income_book_template(template_path)
+
+    credit = BankTransaction(
+        source=TransactionSource(
+            original_filename=statement_path.name,
+            row_number=2,
+        ),
+        date=date(2026, 6, 1),
+        bank=BankName.SENSE,
+        account_number="UA273000010000000000000000001",
+        currency="UAH",
+        document_number="CREDIT-001",
+        debit=Decimal("0.00"),
+        credit=Decimal("20.00"),
+        counterparty="ТОВ Тестовий покупець",
+        counterparty_account="UA753000010000000000000000010",
+        counterparty_tax_id="11111111",
+        payment_purpose="Оплата за послуги",
+    )
+    debit = credit.model_copy(
+        update={
+            "date": date(2026, 7, 1),
+            "document_number": "DEBIT-001",
+            "debit": Decimal("5.00"),
+            "credit": Decimal("0.00"),
+        }
+    )
+    monkeypatch.setattr(
+        "income_book_automation.pipeline._parse_bank_statement",
+        lambda *_args, **_kwargs: [credit, debit],
+    )
+
+    result = run_income_book_pipeline(
+        client=_client_profile(),
+        bank_statements=[
+            BankStatementSource(bank=BankName.SENSE, path=statement_path),
+        ],
+        checkbox_path=checkbox_path,
+        template_path=template_path,
+        output_path=output_path,
+        sheet_name="2026",
+    )
+
+    assert result.output_path == output_path
 
 
 def test_run_income_book_pipeline_deduplicates_overlapping_statements(

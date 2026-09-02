@@ -7,12 +7,12 @@
         <h1>Формування книги доходів</h1>
 
         <p class="hero__lead">
-            Додайте банківські виписки, звіт Checkbox і шаблон книги.
-            Сервіс перевірить файли, об’єднає дані та підготує Excel.
+            Оберіть потрібні джерела доходу, додайте файли та шаблон книги.
+            Сервіс перевірить дані й підготує готовий Excel.
         </p>
 
         <div class="hero__meta" aria-label="Підтримувані формати">
-            <span class="meta-pill">PUMB · Privat · Mono · А-Банк</span>
+            <span class="meta-pill">PUMB · Privat · Mono · А-Банк · Сенс Банк</span>
             <span class="meta-pill">CSV + XLSX</span>
             <span class="meta-pill">До 10 виписок</span>
         </div>
@@ -149,6 +149,47 @@
                 <span class="section-number">02</span>
 
                 <div>
+                    <h2>Оберіть джерела доходу</h2>
+                    <p>Вкажіть, які файли ви завантажуватимете цього разу.</p>
+                </div>
+            </div>
+
+            <div class="source-mode-grid" role="radiogroup" aria-label="Джерела доходу">
+                <label class="source-mode-card">
+                    <input type="radio" name="source_mode" value="both" checked>
+                    <span class="source-mode-card__copy">
+                        <strong>Checkbox і банк</strong>
+                        <span>Завантажити Z-звіт та банківські виписки</span>
+                    </span>
+                </label>
+
+                <label class="source-mode-card">
+                    <input type="radio" name="source_mode" value="checkbox_only">
+                    <span class="source-mode-card__copy">
+                        <strong>Лише Checkbox</strong>
+                        <span>Сформувати книгу без банківських виписок</span>
+                    </span>
+                </label>
+
+                <label class="source-mode-card">
+                    <input type="radio" name="source_mode" value="bank_only">
+                    <span class="source-mode-card__copy">
+                        <strong>Лише банк</strong>
+                        <span>Сформувати книгу без звіту Checkbox</span>
+                    </span>
+                </label>
+            </div>
+        </section>
+
+        <section
+            class="form-section"
+            id="bank-source-section"
+            data-dynamic-section
+        >
+            <div class="section-heading">
+                <span class="section-number">03</span>
+
+                <div>
                     <h2>Банківські виписки</h2>
                     <p>Оберіть банк для кожної виписки. IBAN потрібен лише для Mono.</p>
                 </div>
@@ -185,6 +226,8 @@
                                             Mono
                                         {% elif bank.value == "abank" %}
                                             А-Банк
+                                        {% elif bank.value == "sense" %}
+                                            Сенс Банк
                                         {% endif %}
                                     </option>
                                 {% endfor %}
@@ -261,9 +304,13 @@
             </div>
         </section>
 
-        <section class="form-section">
+        <section
+            class="form-section"
+            id="checkbox-source-section"
+            data-dynamic-section
+        >
             <div class="section-heading">
-                <span class="section-number">03</span>
+                <span class="section-number">04</span>
 
                 <div>
                     <h2>Дані Checkbox</h2>
@@ -318,9 +365,9 @@
             </div>
         </section>
 
-        <section class="form-section">
+        <section class="form-section" data-dynamic-section>
             <div class="section-heading">
-                <span class="section-number">04</span>
+                <span class="section-number">05</span>
 
                 <div>
                     <h2>Книга доходів</h2>
@@ -403,9 +450,9 @@
             </div>
         </section>
 
-        <section class="form-section">
+        <section class="form-section" data-dynamic-section>
             <div class="section-heading">
-                <span class="section-number">05</span>
+                <span class="section-number">06</span>
 
                 <div>
                     <h2>Допоміжні колонки</h2>
@@ -581,12 +628,24 @@
             "#client-validation",
         );
         const statementList = document.querySelector("#bank-statements");
+        const bankSourceSection = document.querySelector(
+            "#bank-source-section",
+        );
+        const checkboxSourceSection = document.querySelector(
+            "#checkbox-source-section",
+        );
+        const sourceModeInputs = [
+            ...form.querySelectorAll('input[name="source_mode"]'),
+        ];
         const addStatementButton = document.querySelector("#add-statement");
         const statementStatus = document.querySelector("#statement-status");
         const submitButton = document.querySelector("#submit-button");
         const submitLabel = document.querySelector("#submit-label");
         const templateFileInput = form.querySelector(
             'input[name="template_file"]',
+        );
+        const checkboxReportInput = form.querySelector(
+            'input[name="checkbox_report"]',
         );
         const outputFilenameInput = document.querySelector("#output-filename");
         const helperColumnSelects = [
@@ -1063,7 +1122,9 @@
             const isMono = bankSelect.value === "mono";
 
             accountField.hidden = !isMono;
-            accountInput.required = isMono;
+            const bankSourceIsActive = bankSourceSection.dataset.active !== "false";
+
+            accountInput.required = bankSourceIsActive && isMono;
 
             if (!isMono) {
                 accountInput.value = "";
@@ -1073,6 +1134,7 @@
         function updateStatements() {
             const statements = [...statementList.querySelectorAll(".bank-statement")];
             const canRemove = statements.length > 1;
+            const bankSourceIsActive = bankSourceSection.dataset.active !== "false";
 
             statements.forEach((statement, index) => {
                 statement.querySelector(".statement-card__title").textContent =
@@ -1081,8 +1143,61 @@
                 updateMonoField(statement);
             });
 
-            addStatementButton.disabled = statements.length >= maxStatements;
+            addStatementButton.disabled = !bankSourceIsActive
+                || statements.length >= maxStatements;
             statementStatus.textContent = `${statements.length} з ${maxStatements} виписок`;
+        }
+
+        function setSourceSectionState(section, isActive) {
+            section.hidden = !isActive;
+            section.dataset.active = isActive ? "true" : "false";
+
+            section.querySelectorAll("input, select, button").forEach((control) => {
+                control.disabled = !isActive;
+            });
+
+            if (!isActive) {
+                section.querySelectorAll(".upload-file-input").forEach((input) => {
+                    input.setCustomValidity("");
+                    input.removeAttribute("aria-invalid");
+                    input.closest(".file-control").classList.remove("has-error");
+                    input.closest(".field").querySelector(
+                        ".file-validation-message",
+                    ).hidden = true;
+                });
+            }
+        }
+
+        function updateSourceMode() {
+            const sourceMode = sourceModeInputs.find((input) => input.checked)?.value
+                || "both";
+            const usesBankStatements = sourceMode !== "checkbox_only";
+            const usesCheckbox = sourceMode !== "bank_only";
+
+            setSourceSectionState(bankSourceSection, usesBankStatements);
+            setSourceSectionState(checkboxSourceSection, usesCheckbox);
+
+            bankSourceSection.querySelectorAll(".bank-select").forEach((select) => {
+                select.required = usesBankStatements;
+            });
+            bankSourceSection.querySelectorAll(".upload-file-input").forEach((input) => {
+                input.required = usesBankStatements;
+            });
+            checkboxReportInput.required = usesCheckbox;
+
+            let sectionNumber = 3;
+            form.querySelectorAll("[data-dynamic-section]").forEach((section) => {
+                if (section.hidden) {
+                    return;
+                }
+
+                section.querySelector(".section-number").textContent = String(
+                    sectionNumber,
+                ).padStart(2, "0");
+                sectionNumber += 1;
+            });
+
+            updateStatements();
         }
 
         addStatementButton.addEventListener("click", () => {
@@ -1125,6 +1240,10 @@
 
         helperColumnSelects.forEach((select) => {
             select.addEventListener("change", validateHelperColumns);
+        });
+
+        sourceModeInputs.forEach((input) => {
+            input.addEventListener("change", updateSourceMode);
         });
 
         form.addEventListener("change", (event) => {
@@ -1271,7 +1390,7 @@
             setSubmitting(false);
         });
 
-        updateStatements();
+        updateSourceMode();
         validateHelperColumns();
         form.querySelectorAll(".upload-file-input").forEach(updateFileControl);
     </script>

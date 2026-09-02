@@ -34,6 +34,7 @@ from income_book_automation.parsers.errors import (
 from income_book_automation.parsers.mono import parse_mono_file
 from income_book_automation.parsers.privat import parse_privat_file
 from income_book_automation.parsers.pumb import parse_pumb_file
+from income_book_automation.parsers.sense import parse_sense_file
 from income_book_automation.rules.bank_rules import classify_bank_transaction
 from income_book_automation.rules.deduplication import deduplicate_bank_transaction
 from income_book_automation.rules.income_rules import (
@@ -74,6 +75,7 @@ BANK_DISPLAY_NAMES = {
     BankName.PRIVAT: "ПриватБанк",
     BankName.MONO: "Mono",
     BankName.ABANK: "А-Банк",
+    BankName.SENSE: "Сенс Банк",
 }
 
 
@@ -167,11 +169,14 @@ def _validate_single_processing_period(
     bank_transactions: list[BankTransaction],
     checkbox_records: list[DailyCheckboxRevenue],
     *,
-    checkbox_filename: str,
+    checkbox_filename: str | None,
 ) -> None:
     periods_by_file: dict[str, set[str]] = {}
 
     for transaction in bank_transactions:
+        if transaction.credit <= 0:
+            continue
+
         filename = transaction.source.original_filename
         period = f"{transaction.date.year}-{transaction.date.month:02d}"
 
@@ -181,7 +186,8 @@ def _validate_single_processing_period(
         f"{record.date.year}-{record.date.month:02d}" for record in checkbox_records
     }
 
-    periods_by_file[checkbox_filename] = checkbox_periods
+    if checkbox_filename is not None:
+        periods_by_file[checkbox_filename] = checkbox_periods
 
     all_periods = {period for periods in periods_by_file.values() for period in periods}
 
@@ -219,6 +225,8 @@ def _parse_bank_statement(
                 path,
                 account_number=account_number,
             )
+        case BankName.SENSE:
+            return parse_sense_file(path)
     raise IncomeBookPipelineError(f"unsupported bank: {bank}")
 
 
@@ -228,7 +236,7 @@ def run_income_book_pipeline(
     bank: BankName | None = None,
     bank_statement_path: Path | None = None,
     bank_statements: list[BankStatementSource] | None = None,
-    checkbox_path: Path,
+    checkbox_path: Path | None = None,
     template_path: Path,
     output_path: Path,
     sheet_name: str,
@@ -236,15 +244,25 @@ def run_income_book_pipeline(
     helper_columns: HelperColumnMapping | None = None,
 ) -> PipelineResult:
     if bank_statements is None:
-        if bank is None or bank_statement_path is None:
-            raise IncomeBookPipelineError("at least one bank statement is required")
-        bank_statements = [
-            BankStatementSource(
-                bank=bank,
-                path=bank_statement_path,
-                account_number=statement_account,
+        if bank is None and bank_statement_path is None:
+            bank_statements = []
+        elif bank is None or bank_statement_path is None:
+            raise IncomeBookPipelineError(
+                "bank and bank statement path must be provided together"
             )
-        ]
+        else:
+            bank_statements = [
+                BankStatementSource(
+                    bank=bank,
+                    path=bank_statement_path,
+                    account_number=statement_account,
+                )
+            ]
+
+    if not bank_statements and checkbox_path is None:
+        raise IncomeBookPipelineError(
+            "at least one income source is required: bank statement or Checkbox"
+        )
 
     _validate_statement_accounts(bank_statements)
     _validate_unique_statement_files(bank_statements)
@@ -293,30 +311,32 @@ def run_income_book_pipeline(
 
     bank_income = aggregate_bank_income_by_date(classified_transactions)
 
-    try:
-        checkbox_records = parse_checkbox_file(checkbox_path)
-    except MissingCheckboxColumnError:
-        raise
-    except CheckboxFormatError as error:
-        raise CheckboxFormatError(
-            f"Файл «{checkbox_path.name}» не розпізнано як Z-звіт Checkbox. "
-            "Завантажте саме Z-звіт Checkbox у форматі XLSX."
-        ) from error
-    except InvalidCheckboxRowError as error:
-        raise InvalidCheckboxRowError(
-            f"У Z-звіті Checkbox «{checkbox_path.name}» знайдено "
-            f"некоректні дані. Деталі: {error}"
-        ) from error
-    except CheckboxParseError as error:
-        raise CheckboxParseError(
-            f"Не вдалося прочитати файл «{checkbox_path.name}» як Z-звіт "
-            "Checkbox. Перевірте файл і повторіть завантаження."
-        ) from error
+    checkbox_records: list[DailyCheckboxRevenue] = []
+    if checkbox_path is not None:
+        try:
+            checkbox_records = parse_checkbox_file(checkbox_path)
+        except MissingCheckboxColumnError:
+            raise
+        except CheckboxFormatError as error:
+            raise CheckboxFormatError(
+                f"Файл «{checkbox_path.name}» не розпізнано як Z-звіт Checkbox. "
+                "Завантажте саме Z-звіт Checkbox у форматі XLSX."
+            ) from error
+        except InvalidCheckboxRowError as error:
+            raise InvalidCheckboxRowError(
+                f"У Z-звіті Checkbox «{checkbox_path.name}» знайдено "
+                f"некоректні дані. Деталі: {error}"
+            ) from error
+        except CheckboxParseError as error:
+            raise CheckboxParseError(
+                f"Не вдалося прочитати файл «{checkbox_path.name}» як Z-звіт "
+                "Checkbox. Перевірте файл і повторіть завантаження."
+            ) from error
 
     _validate_single_processing_period(
         bank_transactions,
         checkbox_records,
-        checkbox_filename=checkbox_path.name,
+        checkbox_filename=checkbox_path.name if checkbox_path is not None else None,
     )
     checkbox_income = aggregate_checkbox_by_date(checkbox_records)
     checkbox_warnings = find_checkbox_refund_warnings(checkbox_income)

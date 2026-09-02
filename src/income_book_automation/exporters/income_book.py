@@ -57,12 +57,73 @@ class InvalidHelperColumnMappingError(IncomeBookExportError):
     """Raised when helper Excel columns are configured incorrectly."""
 
 
+class IncomeBookTemplateReadError(IncomeBookExportError):
+    """Raised when the uploaded workbook cannot be opened."""
+
+    def __init__(self, template_name: str) -> None:
+        self.template_name = template_name
+        super().__init__(f"can't read income-book template '{template_name}'")
+
+
+class IncomeBookTemplateWriteError(IncomeBookExportError):
+    """Raised when the generated workbook cannot be saved."""
+
+    def __init__(self, output_name: str) -> None:
+        self.output_name = output_name
+        super().__init__(f"can't save generated income book '{output_name}'")
+
+
 class MissingIncomeBookSheetError(IncomeBookExportError):
     """Raised when the requested worksheet does not exist."""
+
+    def __init__(
+        self,
+        sheet_name: str,
+        available_sheets: tuple[str, ...],
+    ) -> None:
+        self.sheet_name = sheet_name
+        self.available_sheets = available_sheets
+        super().__init__(f"income-book sheet not found: {sheet_name}")
 
 
 class MissingIncomeBookDateError(IncomeBookExportError):
     """Raised when an entry date is absent from the template."""
+
+    def __init__(self, missing_dates: tuple[date, ...]) -> None:
+        self.missing_dates = missing_dates
+        formatted_dates = ", ".join(value.isoformat() for value in missing_dates)
+        super().__init__(f"income-book dates not found: {formatted_dates}")
+
+
+class MissingYearTotalRowError(IncomeBookExportError):
+    """Raised when the workbook has no annual total row."""
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+        super().__init__(f"income-book year total row not found: {label}")
+
+
+class MissingMonthTotalRowError(IncomeBookExportError):
+    """Raised when one or more populated months have no total row."""
+
+    def __init__(self, month_names: tuple[str, ...]) -> None:
+        self.month_names = month_names
+        formatted_names = ", ".join(month_names)
+        super().__init__(
+            f"month total row not found for existing data: {formatted_names}"
+        )
+
+
+class MissingPreviousMonthTotalRowError(IncomeBookExportError):
+    """Raised when a later month cannot reuse an earlier total-row style."""
+
+
+class DuplicateMonthTotalRowError(IncomeBookExportError):
+    """Raised when a month has more than one total row."""
+
+    def __init__(self, month_name: str) -> None:
+        self.month_name = month_name
+        super().__init__(f"multiple total rows found for month: {month_name}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,16 +143,18 @@ class HelperColumnMapping:
 
         if any(column < MIN_HELPER_COLUMN for column in columns):
             raise InvalidHelperColumnMappingError(
-                "helper columns must start from column 10"
+                "Допоміжні колонки мають починатися з колонки 10 (J)."
             )
 
         if any(column > MAX_HELPER_COLUMN for column in columns):
             raise InvalidHelperColumnMappingError(
-                "helper columns must not exceed column 15"
+                "Допоміжні колонки не можуть бути правіше колонки 15 (O)."
             )
 
         if len(set(columns)) != len(columns):
-            raise InvalidHelperColumnMappingError("helper columns must be unique")
+            raise InvalidHelperColumnMappingError(
+                "Кожен показник має бути призначений окремій колонці."
+            )
 
 
 def _totalled_columns(
@@ -299,24 +362,30 @@ def _find_label_row(
     sheet: Worksheet,
     label: str,
 ) -> int:
-    expected = label.strip().casefold()
+    expected = _normalize_total_label(label)
 
     for row_number in range(1, sheet.max_row + 1):
-        value = sheet.cell(
+        label_cell = sheet.cell(
             row=row_number,
             column=DATE_COLUMN,
-        ).value
+        )
+        value = label_cell.value
 
-        if isinstance(value, str) and value.strip().casefold() == expected:
+        if isinstance(value, str) and _normalize_total_label(value) == expected:
+            label_cell.value = label
             return row_number
 
-    raise IncomeBookExportError(f"income-book row not found: {label}")
+    raise MissingYearTotalRowError(label)
+
+
+def _normalize_total_label(value: str) -> str:
+    normalized = value.replace("\xa0", " ")
+    normalized = " ".join(normalized.split()).casefold()
+    return normalized.removesuffix(":").rstrip()
 
 
 def _month_from_total_label(value: str) -> int | None:
-    normalized = value.replace("\xa0", " ")
-    normalized = normalized.strip().casefold()
-    normalized = normalized.removesuffix(":")
+    normalized = _normalize_total_label(value)
     words = normalized.split()
 
     if not words:
@@ -359,9 +428,7 @@ def _index_month_total_rows(
 
         if month in result:
             month_name = MONTH_NAMES_UKR[month]
-            raise IncomeBookExportError(
-                f"multiple total rows found for month: {month_name}"
-            )
+            raise DuplicateMonthTotalRowError(month_name)
 
         result[month] = row_number
         label_cell.value = f"Всього {MONTH_NAMES_UKR[month]}:"
@@ -385,10 +452,8 @@ def _validate_existing_month_total_rows(
     if not missing_months:
         return
 
-    missing_names = ", ".join(MONTH_NAMES_UKR[month] for month in missing_months)
-
-    raise IncomeBookExportError(
-        f"month total row not found for existing data: {missing_names}"
+    raise MissingMonthTotalRowError(
+        tuple(MONTH_NAMES_UKR[month] for month in missing_months)
     )
 
 
@@ -402,10 +467,8 @@ def _period_month_total_rows(
     missing_months = [month for month in period_months if month not in month_total_rows]
 
     if missing_months:
-        missing_names = ", ".join(MONTH_NAMES_UKR[month] for month in missing_months)
-
-        raise IncomeBookExportError(
-            f"month total row not found for existing data: {missing_names}"
+        raise MissingMonthTotalRowError(
+            tuple(MONTH_NAMES_UKR[month] for month in missing_months)
         )
 
     return [month_total_rows[month] for month in period_months]
@@ -561,7 +624,7 @@ def _append_new_month(
     }
 
     if not month_total_rows:
-        raise IncomeBookExportError("previous month total row not found")
+        raise MissingPreviousMonthTotalRowError("previous month total row not found")
 
     total_style_row = max(month_total_rows.values())
 
@@ -680,14 +743,13 @@ def export_income_book(
             data_only=False,
         )
     except Exception as error:
-        raise IncomeBookExportError(
-            f"can't read income-book template '{template_path.name}'"
-        ) from error
+        raise IncomeBookTemplateReadError(template_path.name) from error
 
     try:
         if sheet_name not in workbook.sheetnames:
             raise MissingIncomeBookSheetError(
-                f"income-book sheet not found: {sheet_name}"
+                sheet_name,
+                tuple(workbook.sheetnames),
             )
 
         sheet = workbook[sheet_name]
@@ -723,22 +785,20 @@ def export_income_book(
                 )
 
             else:
-                formatted_dates = ", ".join(
-                    missing_date.isoformat() for missing_date in missing_dates
-                )
-                raise MissingIncomeBookDateError(
-                    f"income-book dates not found: {formatted_dates}"
-                )
+                raise MissingIncomeBookDateError(tuple(missing_dates))
         else:
             for entry in entries:
                 row_number = rows_by_date[entry.date]
                 _write_daily_entry(sheet, row_number, entry, helper_columns)
 
-        output_path.parent.mkdir(
-            parents=True,
-            exist_ok=True,
-        )
-        workbook.save(output_path)
+        try:
+            output_path.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+            workbook.save(output_path)
+        except OSError as error:
+            raise IncomeBookTemplateWriteError(output_path.name) from error
 
     finally:
         workbook.close()

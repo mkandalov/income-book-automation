@@ -86,6 +86,7 @@ class BankName(StrEnum):
     PRIVAT = "privat"
     MONO = "mono"
     ABANK = "abank"
+    SENSE = "sense"
 
 
 class TransactionSource(BaseModel):

@@ -115,6 +115,8 @@ def _validate_request(
     bank_statements: list[UploadFile] | None = None,
     account_numbers: list[str] | None = None,
     sheet_name: str = "2026",
+    source_mode: processing.IncomeSourceMode = processing.IncomeSourceMode.BOTH,
+    checkbox_report: UploadFile | None = None,
 ) -> list[str | None]:
     selected_banks = [BankName.PUMB] if banks is None else banks
     selected_statements = (
@@ -124,10 +126,13 @@ def _validate_request(
 
     return processing._validate_request(
         client_id=client_id,
+        source_mode=source_mode,
         banks=selected_banks,
         bank_statements=selected_statements,
         account_numbers=selected_accounts,
-        checkbox_report=_upload("checkbox.xlsx"),
+        checkbox_report=(
+            _upload("checkbox.xlsx") if checkbox_report is None else checkbox_report
+        ),
         template_file=_upload("template.xlsx"),
         sheet_name=sheet_name,
     )
@@ -260,6 +265,50 @@ def test_validate_request_ignores_account_for_other_banks() -> None:
     assert result == [None]
 
 
+def test_validate_request_allows_checkbox_without_bank_statements() -> None:
+    result = processing._validate_request(
+        client_id="client-test-001",
+        source_mode=processing.IncomeSourceMode.CHECKBOX_ONLY,
+        banks=[],
+        bank_statements=[],
+        account_numbers=[],
+        checkbox_report=_upload("checkbox.xlsx"),
+        template_file=_upload("template.xlsx"),
+        sheet_name="2026",
+    )
+
+    assert result == []
+
+
+def test_validate_request_allows_bank_statements_without_checkbox() -> None:
+    result = processing._validate_request(
+        client_id="client-test-001",
+        source_mode=processing.IncomeSourceMode.BANK_ONLY,
+        banks=[BankName.SENSE],
+        bank_statements=[_upload("sense.csv")],
+        account_numbers=[""],
+        checkbox_report=None,
+        template_file=_upload("template.xlsx"),
+        sheet_name="2026",
+    )
+
+    assert result == [None]
+
+
+def test_validate_request_requires_checkbox_in_both_mode() -> None:
+    with pytest.raises(processing.UploadInputError, match="Додайте Звіт"):
+        processing._validate_request(
+            client_id="client-test-001",
+            source_mode=processing.IncomeSourceMode.BOTH,
+            banks=[BankName.PUMB],
+            bank_statements=[_upload("statement.csv")],
+            account_numbers=[""],
+            checkbox_report=None,
+            template_file=_upload("template.xlsx"),
+            sheet_name="2026",
+        )
+
+
 def test_generate_from_uploads_forwards_helper_columns(
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -331,6 +380,7 @@ def test_generate_from_uploads_forwards_helper_columns(
     result = processing.generate_income_book_from_uploads(
         client_id="client-test-001",
         client_config_directory=processing.Path("/private/client-configs"),
+        source_mode=processing.IncomeSourceMode.BOTH,
         banks=[BankName.PUMB],
         bank_statements=[_upload("bank-original.csv")],
         account_numbers=[""],
@@ -355,6 +405,68 @@ def test_generate_from_uploads_forwards_helper_columns(
             "income-book-original.xlsx",
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("source_mode", "expected_bank_count", "expects_checkbox"),
+    [
+        (processing.IncomeSourceMode.CHECKBOX_ONLY, 0, True),
+        (processing.IncomeSourceMode.BANK_ONLY, 1, False),
+    ],
+)
+def test_generate_from_uploads_forwards_selected_income_sources(
+    monkeypatch: MonkeyPatch,
+    source_mode: processing.IncomeSourceMode,
+    expected_bank_count: int,
+    expects_checkbox: bool,
+) -> None:
+    monkeypatch.setattr(
+        processing,
+        "load_client_profile_by_id",
+        lambda _directory, _client_id: object(),
+    )
+    forwarded_sources: list[tuple[int, bool]] = []
+
+    def fake_run_income_book_pipeline(**kwargs: object) -> SimpleNamespace:
+        bank_statements = kwargs["bank_statements"]
+        checkbox_path = kwargs["checkbox_path"]
+        output_path = kwargs["output_path"]
+        assert isinstance(bank_statements, list)
+        assert isinstance(output_path, processing.Path)
+        forwarded_sources.append((len(bank_statements), checkbox_path is not None))
+        output_path.write_bytes(b"generated-workbook")
+        return SimpleNamespace(
+            daily_entries=(),
+            classified_transactions=(),
+            needs_review=(),
+            duplicate_transactions=(),
+            checkbox_warnings=(),
+            no_income=True,
+        )
+
+    monkeypatch.setattr(
+        processing,
+        "run_income_book_pipeline",
+        fake_run_income_book_pipeline,
+    )
+
+    processing.generate_income_book_from_uploads(
+        client_id="client-test-001",
+        client_config_directory=processing.Path("/private/client-configs"),
+        source_mode=source_mode,
+        banks=[BankName.SENSE] if source_mode.uses_bank_statements else None,
+        bank_statements=(
+            [_upload("sense.csv")] if source_mode.uses_bank_statements else None
+        ),
+        account_numbers=[""] if source_mode.uses_bank_statements else None,
+        checkbox_report=(
+            _upload("ZReport.xlsx") if source_mode.uses_checkbox else None
+        ),
+        template_file=_upload("income-book.xlsx"),
+        sheet_name="2026",
+    )
+
+    assert forwarded_sources == [(expected_bank_count, expects_checkbox)]
 
 
 def test_upload_filename_removes_windows_directories() -> None:
@@ -391,6 +503,7 @@ def test_generate_rejects_unknown_selected_client(
         processing.generate_income_book_from_uploads(
             client_id="client-unknown",
             client_config_directory=processing.Path("/private/client-configs"),
+            source_mode=processing.IncomeSourceMode.BOTH,
             banks=[BankName.PUMB],
             bank_statements=[_upload("bank.csv")],
             account_numbers=[""],
@@ -425,6 +538,7 @@ def test_export_error_names_template_field_and_original_file(
         processing.generate_income_book_from_uploads(
             client_id="client-test-001",
             client_config_directory=processing.Path("/private/client-configs"),
+            source_mode=processing.IncomeSourceMode.BOTH,
             banks=[BankName.PUMB],
             bank_statements=[_upload("bank.csv")],
             account_numbers=[""],
@@ -432,3 +546,129 @@ def test_export_error_names_template_field_and_original_file(
             template_file=_upload("wrong-income-book.xlsx"),
             sheet_name="2026",
         )
+
+
+def _render_export_error(
+    monkeypatch: MonkeyPatch,
+    error: processing.IncomeBookExportError,
+) -> str:
+    monkeypatch.setattr(
+        processing,
+        "load_client_profile_by_id",
+        lambda _directory, _client_id: object(),
+    )
+
+    def fake_run_income_book_pipeline(**_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(
+        processing,
+        "run_income_book_pipeline",
+        fake_run_income_book_pipeline,
+    )
+
+    with pytest.raises(processing.IncomeBookExportError) as error_info:
+        processing.generate_income_book_from_uploads(
+            client_id="client-test-001",
+            client_config_directory=processing.Path("/private/client-configs"),
+            source_mode=processing.IncomeSourceMode.BOTH,
+            banks=[BankName.PUMB],
+            bank_statements=[_upload("bank.csv")],
+            account_numbers=[""],
+            checkbox_report=_upload("ZReport.xlsx"),
+            template_file=_upload("employee-template.xlsx"),
+            sheet_name="2026",
+        )
+
+    return str(error_info.value)
+
+
+@pytest.mark.parametrize(
+    ("export_error", "expected_fragments"),
+    [
+        (
+            processing.IncomeBookTemplateReadError("employee-template.xlsx"),
+            (
+                "employee-template.xlsx",
+                "не вдалося відкрити як книгу XLSX",
+            ),
+        ),
+        (
+            processing.MissingIncomeBookSheetError(
+                "2026",
+                ("2025", "Чекбокс"),
+            ),
+            (
+                "employee-template.xlsx",
+                "не знайдено лист «2026»",
+                "Доступні листи: «2025», «Чекбокс»",
+            ),
+        ),
+        (
+            processing.MissingYearTotalRowError("Всього 2026 рік:"),
+            (
+                "employee-template.xlsx",
+                "лист «2026»",
+                "не знайдено рядок річного підсумку",
+                "Всього 2026 рік:",
+                "Двокрапка наприкінці необов’язкова",
+            ),
+        ),
+        (
+            processing.MissingMonthTotalRowError(("квітень", "травень")),
+            (
+                "employee-template.xlsx",
+                "Всього квітень:",
+                "Всього травень:",
+            ),
+        ),
+        (
+            processing.DuplicateMonthTotalRowError("травень"),
+            (
+                "employee-template.xlsx",
+                "знайдено кілька рядків підсумку",
+                "Всього травень:",
+            ),
+        ),
+        (
+            processing.MissingIncomeBookDateError((date(2026, 7, 1), date(2026, 7, 3))),
+            (
+                "employee-template.xlsx",
+                "01.07.2026, 03.07.2026",
+                "дати Excel",
+            ),
+        ),
+        (
+            processing.MissingPreviousMonthTotalRowError(),
+            (
+                "employee-template.xlsx",
+                "не знайдено жодного рядка місячного підсумку",
+            ),
+        ),
+        (
+            processing.InvalidHelperColumnMappingError(
+                "Кожен показник має бути призначений окремій колонці."
+            ),
+            (
+                "Допоміжні колонки",
+                "Кожен показник",
+            ),
+        ),
+        (
+            processing.IncomeBookTemplateWriteError("result.xlsx"),
+            (
+                "Не вдалося зберегти готову книгу доходів",
+                "зверніться до адміністратора",
+            ),
+        ),
+    ],
+)
+def test_export_errors_explain_exact_template_problem(
+    monkeypatch: MonkeyPatch,
+    export_error: processing.IncomeBookExportError,
+    expected_fragments: tuple[str, ...],
+) -> None:
+    message = _render_export_error(monkeypatch, export_error)
+
+    for fragment in expected_fragments:
+        assert fragment in message
