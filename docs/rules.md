@@ -17,10 +17,11 @@ The same pipeline is used by the web application and CLI.
 One web request contains:
 
 - one client selected from the private server-side catalog;
-- between one and ten bank statement CSV files;
-- one selected bank format for every statement;
-- one statement IBAN for every Monobank statement;
-- one Checkbox Z-report XLSX workbook;
+- one source mode: both sources, only Checkbox, or only bank statements;
+- when bank data is selected, between one and ten statement CSV files and one
+  selected bank format for every statement;
+- one statement IBAN for every selected Monobank statement;
+- when Checkbox is selected, one Checkbox Z-report XLSX workbook;
 - one existing income-book XLSX template;
 - a target worksheet name;
 - four optional helper-column assignments;
@@ -38,9 +39,11 @@ statement.
 
 ### Calendar scope
 
-All bank transactions and Checkbox rows in one run must belong to one calendar
-month. A mismatch between files or multiple months inside one file is a hard
-error. The error identifies each original filename and its detected month.
+All incoming bank transactions and Checkbox rows in one run must belong to one
+calendar month. Outgoing debits do not define the month because some bank
+exports include next-day service fees after the requested period. A mismatch
+between income sources is a hard error. The error identifies each original
+filename and its detected month.
 
 ## 2. Client catalog and identity
 
@@ -80,8 +83,11 @@ directory.
 Before the pipeline starts, the web layer enforces:
 
 - a client must be selected;
-- at least one and at most ten bank statements are accepted;
-- bank, statement, and account-input lists must have equal lengths;
+- the selected mode must contain at least one income source;
+- when bank data is selected, at least one and at most ten statements are
+  accepted;
+- bank, statement, and account-input lists must have equal lengths when bank
+  data is selected;
 - every Monobank statement requires a valid Ukrainian statement IBAN;
 - bank statements must use `.csv`;
 - Checkbox and income-book uploads must use `.xlsx`;
@@ -163,6 +169,7 @@ IBAN validation.
 | PrivatBank | semicolon CSV, CP1251 | positive signed amount becomes credit; negative signed amount becomes debit |
 | Monobank | semicolon CSV, UTF-8 BOM | direction and signed amount must agree; statement IBAN is supplied separately |
 | A-Bank | comma CSV, UTF-8 BOM | statement IBAN and currency are extracted from the first metadata row |
+| Sense Bank | semicolon CSV, CP1251 | `Кредит` is incoming and `Дебет` is outgoing; extra unescaped semicolons are reconstructed inside `Призначення платежу` |
 
 The strict CSV reader rejects:
 
@@ -318,9 +325,9 @@ of income.
 
 ## 9. Period validation and daily aggregation
 
-The period check considers every parsed bank transaction, including excluded
-debits, and every parsed Checkbox row. All detected year-month pairs must be
-identical.
+The period check considers parsed bank credits and every parsed Checkbox row.
+Outgoing debits are ignored for period detection. All detected year-month pairs
+must be identical.
 
 After classification succeeds:
 
@@ -459,8 +466,8 @@ recorded in pipeline response metadata.
 - Real source documents and client profiles stay outside Git.
 - Client YAML files are mounted read-only into the Docker container.
 - Uploaded files are temporary and generated workbooks are returned directly.
-- Caddy provides internal HTTPS and FastAPI port 8000 is loopback-only on the
-  host.
+- The infrastructure reverse proxy provides HTTPS and reaches FastAPI through
+  the VM's private address and port 8000.
 - HTTPS encrypts traffic but does not authenticate users. Until application
   authentication is implemented, network and firewall controls define who may
   access the service.

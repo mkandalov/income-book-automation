@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from shutil import copyfileobj
 from tempfile import TemporaryDirectory
@@ -7,8 +8,17 @@ from fastapi import UploadFile
 
 from income_book_automation.config import load_client_profile_by_id
 from income_book_automation.exporters.income_book import (
+    DuplicateMonthTotalRowError,
     HelperColumnMapping,
     IncomeBookExportError,
+    IncomeBookTemplateReadError,
+    IncomeBookTemplateWriteError,
+    InvalidHelperColumnMappingError,
+    MissingIncomeBookDateError,
+    MissingIncomeBookSheetError,
+    MissingMonthTotalRowError,
+    MissingPreviousMonthTotalRowError,
+    MissingYearTotalRowError,
 )
 from income_book_automation.iban import (
     InvalidUkrainianIbanError,
@@ -54,6 +64,20 @@ class UploadInputError(Exception):
     """Raised when uploaded files cannot be prepared for processing."""
 
 
+class IncomeSourceMode(StrEnum):
+    BOTH = "both"
+    CHECKBOX_ONLY = "checkbox_only"
+    BANK_ONLY = "bank_only"
+
+    @property
+    def uses_bank_statements(self) -> bool:
+        return self in {self.BOTH, self.BANK_ONLY}
+
+    @property
+    def uses_checkbox(self) -> bool:
+        return self in {self.BOTH, self.CHECKBOX_ONLY}
+
+
 @dataclass(frozen=True, slots=True)
 class WebGenerationResult:
     content: bytes
@@ -84,6 +108,92 @@ class ReviewTransactionRow:
 def _display_value(value: str | None) -> str:
     normalized_value = (value or "").strip()
     return normalized_value or "—"
+
+
+def _format_export_error_for_user(
+    error: IncomeBookExportError,
+    *,
+    template_name: str,
+    sheet_name: str,
+) -> str:
+    template_description = f"Файл у полі «Шаблон книги доходів» — «{template_name}»"
+    sheet_description = f"лист «{sheet_name}»"
+
+    if isinstance(error, IncomeBookTemplateReadError):
+        return (
+            f"{template_description} не вдалося відкрити як книгу XLSX. "
+            "Переконайтеся, що файл не пошкоджений і має формат .xlsx."
+        )
+
+    if isinstance(error, MissingIncomeBookSheetError):
+        available_sheets = ", ".join(
+            f"«{available_sheet}»" for available_sheet in error.available_sheets
+        )
+        available_description = (
+            f" Доступні листи: {available_sheets}."
+            if available_sheets
+            else " У книзі немає доступних листів."
+        )
+        return (
+            f"{template_description}: не знайдено лист «{error.sheet_name}»."
+            f"{available_description} Перевірте поле «Назва листа»."
+        )
+
+    if isinstance(error, MissingYearTotalRowError):
+        return (
+            f"{template_description}, {sheet_description}: не знайдено рядок "
+            f"річного підсумку «{error.label}». Двокрапка наприкінці "
+            "необов’язкова; перевірте сам текст підпису."
+        )
+
+    if isinstance(error, DuplicateMonthTotalRowError):
+        expected_label = f"Всього {error.month_name}:"
+        return (
+            f"{template_description}, {sheet_description}: знайдено кілька "
+            f"рядків підсумку за місяць «{error.month_name}». Залиште один "
+            f"рядок з підписом «{expected_label}»."
+        )
+
+    if isinstance(error, MissingMonthTotalRowError):
+        expected_labels = ", ".join(
+            f"«Всього {month_name}:»" for month_name in error.month_names
+        )
+        return (
+            f"{template_description}, {sheet_description}: для вже заповнених "
+            "місяців не знайдено рядки підсумків. Очікувані підписи: "
+            f"{expected_labels}."
+        )
+
+    if isinstance(error, MissingPreviousMonthTotalRowError):
+        return (
+            f"{template_description}, {sheet_description}: не знайдено жодного "
+            "рядка місячного підсумку, стиль якого можна використати для нового "
+            "місяця. Перевірте рядки з підписами на зразок «Всього травень:»."
+        )
+
+    if isinstance(error, MissingIncomeBookDateError):
+        missing_dates = ", ".join(
+            missing_date.strftime("%d.%m.%Y") for missing_date in error.missing_dates
+        )
+        return (
+            f"{template_description}, {sheet_description}: не знайдено рядки "
+            f"для дат {missing_dates}. Перевірте, чи шаблон містить потрібні "
+            "дати та чи вони записані як дати Excel."
+        )
+
+    if isinstance(error, InvalidHelperColumnMappingError):
+        return f"Помилка у блоці «Допоміжні колонки»: {error}"
+
+    if isinstance(error, IncomeBookTemplateWriteError):
+        return (
+            "Не вдалося зберегти готову книгу доходів. Повторіть спробу. "
+            "Якщо помилка повториться, зверніться до адміністратора."
+        )
+
+    return (
+        f"Не вдалося заповнити шаблон книги доходів «{template_name}». "
+        "Перевірте структуру шаблону та повторіть спробу."
+    )
 
 
 def _validate_upload(
@@ -129,17 +239,18 @@ def _validate_upload(
 def _validate_request(
     *,
     client_id: str,
+    source_mode: IncomeSourceMode,
     banks: list[BankName],
     bank_statements: list[UploadFile],
     account_numbers: list[str],
-    checkbox_report: UploadFile,
+    checkbox_report: UploadFile | None,
     template_file: UploadFile,
     sheet_name: str,
 ) -> list[str | None]:
     if not client_id.strip():
         raise UploadInputError("Оберіть ФОПа зі списку.")
 
-    if not banks:
+    if source_mode.uses_bank_statements and not banks:
         raise UploadInputError("Додайте щонайменше одну банківську виписку.")
 
     if len(banks) > MAX_BANK_STATEMENTS:
@@ -147,7 +258,9 @@ def _validate_request(
             f"Можна додати не більше {MAX_BANK_STATEMENTS} банківських виписок."
         )
 
-    if not len(banks) == len(bank_statements) == len(account_numbers):
+    if source_mode.uses_bank_statements and not (
+        len(banks) == len(bank_statements) == len(account_numbers)
+    ):
         raise UploadInputError(
             "Для кожної банківської виписки виберіть банк і заповніть "
             "пов'язане поле рахунку."
@@ -156,11 +269,15 @@ def _validate_request(
     if not sheet_name.strip():
         raise UploadInputError("Вкажіть назву листа у шаблоні книги доходів.")
 
-    _validate_upload(
-        checkbox_report,
-        label="Z-звіт Checkbox",
-        allowed_extensions=XLSX_EXTENSIONS,
-    )
+    if source_mode.uses_checkbox:
+        if checkbox_report is None or not checkbox_report.filename:
+            raise UploadInputError("Додайте Звіт по Z-звітам Checkbox.")
+
+        _validate_upload(
+            checkbox_report,
+            label="Z-звіт Checkbox",
+            allowed_extensions=XLSX_EXTENSIONS,
+        )
 
     _validate_upload(
         template_file,
@@ -309,16 +426,30 @@ def generate_income_book_from_uploads(
     *,
     client_id: str,
     client_config_directory: Path,
-    banks: list[BankName],
-    bank_statements: list[UploadFile],
-    account_numbers: list[str],
-    checkbox_report: UploadFile,
+    source_mode: IncomeSourceMode,
+    banks: list[BankName] | None,
+    bank_statements: list[UploadFile] | None,
+    account_numbers: list[str] | None,
+    checkbox_report: UploadFile | None,
     template_file: UploadFile,
     sheet_name: str,
     helper_columns: HelperColumnMapping | None = None,
 ) -> WebGenerationResult:
+    banks = banks or []
+    bank_statements = bank_statements or []
+    account_numbers = account_numbers or []
+
+    if not source_mode.uses_bank_statements:
+        banks = []
+        bank_statements = []
+        account_numbers = []
+
+    if not source_mode.uses_checkbox:
+        checkbox_report = None
+
     normalized_accounts = _validate_request(
         client_id=client_id,
+        source_mode=source_mode,
         banks=banks,
         bank_statements=bank_statements,
         account_numbers=account_numbers,
@@ -334,12 +465,14 @@ def generate_income_book_from_uploads(
     with TemporaryDirectory(prefix="income-book-") as temporary_directory:
         workspace = Path(temporary_directory)
 
-        checkbox_path = _original_upload_path(
-            workspace,
-            "checkbox",
-            checkbox_report,
-            fallback_name="checkbox.xlsx",
-        )
+        checkbox_path: Path | None = None
+        if checkbox_report is not None:
+            checkbox_path = _original_upload_path(
+                workspace,
+                "checkbox",
+                checkbox_report,
+                fallback_name="checkbox.xlsx",
+            )
         template_path = _original_upload_path(
             workspace,
             "template",
@@ -348,7 +481,12 @@ def generate_income_book_from_uploads(
         )
         output_path = workspace / "result.xlsx"
 
-        _save_upload(checkbox_report, checkbox_path, label="Z-звіт Checkbox")
+        if checkbox_report is not None and checkbox_path is not None:
+            _save_upload(
+                checkbox_report,
+                checkbox_path,
+                label="Z-звіт Checkbox",
+            )
         _save_upload(
             template_file,
             template_path,
@@ -391,9 +529,11 @@ def generate_income_book_from_uploads(
             )
         except IncomeBookExportError as error:
             raise IncomeBookExportError(
-                f"Не вдалося заповнити шаблон книги доходів "
-                f"«{template_path.name}». Перевірте, чи правильно вказано "
-                "назву листа та чи шаблон має потрібну структуру."
+                _format_export_error_for_user(
+                    error,
+                    template_name=template_path.name,
+                    sheet_name=sheet_name,
+                )
             ) from error
 
         try:

@@ -1,11 +1,12 @@
 import json
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 from httpx2 import Response
-from pytest import MonkeyPatch
+from pytest import LogCaptureFixture, MonkeyPatch
 
 import income_book_automation.web.app as web_app
 from income_book_automation.config import ClientProfileOption
@@ -37,6 +38,7 @@ def _post_generate(
         "/generate",
         data={
             "client_id": "client-test-001",
+            "source_mode": "both",
             "banks": ["pumb"],
             "account_numbers": [""],
             "sheet_name": "2026",
@@ -101,6 +103,12 @@ def test_index_returns_html_page(monkeypatch: MonkeyPatch) -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Формування книги доходів" in response.text
+    assert 'name="source_mode"' in response.text
+    assert 'value="checkbox_only"' in response.text
+    assert 'value="bank_only"' in response.text
+    assert "Сенс Банк" in response.text
+    assert response.text.count("data-dynamic-section") == 5
+    assert 'form.querySelectorAll("[data-dynamic-section]")' in response.text
     assert 'name="output_filename"' in response.text
     assert 'name="helper_total_column"' in response.text
     assert 'name="checkbox_card_column"' in response.text
@@ -164,6 +172,81 @@ def test_generate_returns_downloadable_excel(
     assert response.headers["x-needs-review"] == "0"
     assert response.headers["x-duplicates-skipped"] == "2"
     assert response.headers["x-no-income"] == "false"
+
+
+def test_generate_accepts_checkbox_only_request(monkeypatch: MonkeyPatch) -> None:
+    received_modes: list[object] = []
+
+    def fake_generate(**kwargs: object) -> WebGenerationResult:
+        received_modes.append(kwargs["source_mode"])
+        return WebGenerationResult(
+            content=b"checkbox-only",
+            processed_days=1,
+            bank_transactions=0,
+            needs_review=0,
+            duplicate_transactions=0,
+        )
+
+    monkeypatch.setattr(web_app, "generate_income_book_from_uploads", fake_generate)
+    response = client.post(
+        "/generate",
+        data={
+            "client_id": "client-test-001",
+            "source_mode": "checkbox_only",
+            "sheet_name": "2026",
+            "output_filename": "result.xlsx",
+        },
+        files=[
+            (
+                "checkbox_report",
+                ("checkbox.xlsx", b"checkbox", "application/octet-stream"),
+            ),
+            (
+                "template_file",
+                ("template.xlsx", b"template", "application/octet-stream"),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert received_modes == [web_app.IncomeSourceMode.CHECKBOX_ONLY]
+
+
+def test_generate_accepts_bank_only_request(monkeypatch: MonkeyPatch) -> None:
+    received_checkbox: list[object] = []
+
+    def fake_generate(**kwargs: object) -> WebGenerationResult:
+        received_checkbox.append(kwargs["checkbox_report"])
+        return WebGenerationResult(
+            content=b"bank-only",
+            processed_days=1,
+            bank_transactions=1,
+            needs_review=0,
+            duplicate_transactions=0,
+        )
+
+    monkeypatch.setattr(web_app, "generate_income_book_from_uploads", fake_generate)
+    response = client.post(
+        "/generate",
+        data={
+            "client_id": "client-test-001",
+            "source_mode": "bank_only",
+            "banks": ["sense"],
+            "account_numbers": [""],
+            "sheet_name": "2026",
+            "output_filename": "result.xlsx",
+        },
+        files=[
+            ("bank_statements", ("sense.csv", b"statement", "text/csv")),
+            (
+                "template_file",
+                ("template.xlsx", b"template", "application/octet-stream"),
+            ),
+        ],
+    )
+
+    assert response.status_code == 200
+    assert received_checkbox == [None]
 
 
 def test_generate_exposes_no_income_warning(
@@ -330,7 +413,7 @@ def test_generate_rejects_duplicate_helper_columns() -> None:
     )
 
     assert response.status_code == 400
-    assert "helper columns must be unique" in response.text
+    assert "Кожен показник має бути призначений окремій колонці" in response.text
 
 
 def test_generate_supports_unicode_output_filename(
@@ -379,3 +462,28 @@ def test_generate_returns_bad_request_for_processing_error(
     assert "Не вдалося сформувати книгу доходів" in response.text
     assert "Synthetic upload error" in response.text
     assert "Повернутися до форми" in response.text
+
+
+def test_generate_hides_unexpected_error_details_and_returns_error_code(
+    monkeypatch: MonkeyPatch,
+    caplog: LogCaptureFixture,
+) -> None:
+    def fake_generate(**_: object) -> WebGenerationResult:
+        raise RuntimeError("secret path: /srv/income-book/clients/client.yaml")
+
+    monkeypatch.setattr(web_app, "generate_income_book_from_uploads", fake_generate)
+    monkeypatch.setattr(
+        web_app,
+        "uuid4",
+        lambda: SimpleNamespace(hex="abc12345deadbeef"),
+    )
+
+    response = _post_generate()
+
+    assert response.status_code == 500
+    assert "Код помилки: ABC12345" in response.text
+    assert "повідомте цей код адміністратору" in response.text
+    assert "/srv/income-book" not in response.text
+    assert "client.yaml" not in response.text
+    assert "ABC12345" in caplog.text
+    assert "/srv/income-book/clients/client.yaml" in caplog.text
