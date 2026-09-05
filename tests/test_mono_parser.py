@@ -164,6 +164,74 @@ def test_parse_mono_file_normalizes_headers_and_direction(tmp_path: Path) -> Non
     assert transactions[1].date == date(2026, 7, 8)
 
 
+def test_parse_mono_file_supports_comma_export_with_metadata(tmp_path: Path) -> None:
+    headers = [
+        "Дата операції",
+        "Час операції",
+        "Вид операції (дебет/кредит)",
+        "Деталі операції",
+        "Контрагент",
+        "ЄДРПОУ контрагента",
+        "IBAN контрагента",
+        "Сума в валюті рахунку",
+        "Сума в валюті операції",
+        "Валюта операції",
+        "Курс",
+        "Еквівалент суми за курсом НБУ на дату операції (для зарахувань)",
+        "Сума комісій в валюті рахунку",
+        "Залишок після операції в валюті рахунку",
+    ]
+    credit_values = [
+        "07.07.2026",
+        "12:30:00",
+        "кредит",
+        "Оплата за тестові послуги",
+        "ТОВ Тестовий клієнт",
+        "0000000000",
+        "UA973000010000000000000000002",
+        "100.00",
+        "100.00",
+        "UAH",
+        "-",
+        "-",
+        "-",
+        "100.00",
+    ]
+    debit_values = credit_values.copy()
+    debit_values[0] = "08.07.2026"
+    debit_values[1] = "13:30:00"
+    debit_values[2] = "дебет"
+    debit_values[7] = "-25.00"
+    debit_values[8] = "-25.00"
+    debit_values[13] = "75.00"
+
+    source_path = tmp_path / "comma-export-mono.csv"
+    with source_path.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.writer(file, delimiter=",")
+        writer.writerow(
+            [
+                (
+                    "ФОП Тестовий, Виписка за рахунком "
+                    f"{TEST_ACCOUNT} за період з 01.07.2026 по 31.07.2026"
+                )
+            ]
+        )
+        writer.writerow([header.replace(" ", " \n", 1) for header in headers])
+        writer.writerow(credit_values)
+        writer.writerow(debit_values)
+
+    transactions = parse_mono_file(source_path, account_number=TEST_ACCOUNT)
+
+    assert len(transactions) == 2
+    assert transactions[0].source.row_number == 3
+    assert transactions[0].credit == Decimal("100.00")
+    assert transactions[0].document_number.startswith("MONO-")
+    assert transactions[1].source.row_number == 4
+    assert transactions[1].debit == Decimal("25.00")
+    assert transactions[1].document_number.startswith("MONO-")
+    assert transactions[0].document_number != transactions[1].document_number
+
+
 def test_parse_mono_file_rejects_missing_required_header(
     tmp_path: Path,
 ) -> None:
