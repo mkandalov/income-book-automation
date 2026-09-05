@@ -51,9 +51,16 @@ def read_strict_csv_rows(
     delimiter: str,
     required_headers: set[str],
     header_row_number: int = 1,
+    rows_before_header: int = 0,
     normalize_header: Callable[[str], str] | None = None,
 ) -> Iterator[tuple[int, dict[str, str]]]:
     reader = csv.reader(file, delimiter=delimiter)
+
+    for _ in range(rows_before_header):
+        if next(reader, None) is None:
+            raise BankStatementFormatError(
+                f"File '{path.name}', bank '{bank_name}': CSV header row is missing"
+            )
 
     raw_headers = next(reader, None)
 
